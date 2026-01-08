@@ -25,8 +25,12 @@ Thumbs.db
 # Allow JSONL files in data folder
 !data/*.jsonl
 *.jsonl
+# Allow results folder
+!results/**/*.jsonl
 results/
 *.log
+# Exclude CSV files in root
+*.csv
 
 # Environment variables
 .env
