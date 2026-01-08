@@ -22,6 +22,8 @@ Thumbs.db
 
 # Project specific
 *.pdf
+# Allow JSONL files in data folder
+!data/*.jsonl
 *.jsonl
 results/
 *.log
