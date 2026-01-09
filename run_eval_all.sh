@@ -32,19 +32,31 @@ for model in "${MODELS[@]}"; do
         echo "평가 시작: 모델=$model, 데이터셋=$dataset"
         echo "=========================================="
         
+        # CSV 생성을 건너뛰기 위해 --no-csv 플래그 추가 (또는 별도 스크립트로 분리)
+        # 일단은 기존대로 실행 (각 실행마다 CSV 업데이트)
         python main.py \
             --split "$dataset" \
             --model "$model" \
             --max_samples "$MAX_SAMPLES"
         
         if [ $? -eq 0 ]; then
-            echo "✅ 완료: $model on $dataset"
+            echo "[SUCCESS] 완료: $model on $dataset"
         else
-            echo "❌ 실패: $model on $dataset"
+            echo "[FAILED] 실패: $model on $dataset"
         fi
         
         echo ""
     done
+done
+
+# 모든 평가 완료 후 각 데이터셋별로 최종 CSV 생성
+echo "=========================================="
+echo "최종 CSV 생성 중..."
+echo "=========================================="
+
+for dataset in "${DATASETS[@]}"; do
+    echo "CSV 생성: $dataset"
+    python -c "from csv_results import build_split_csv; build_split_csv('$dataset', results_root='./results', out_dir='.'); print('완료: $dataset')"
 done
 
 echo "=========================================="
