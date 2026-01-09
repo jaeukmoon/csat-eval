@@ -22,10 +22,11 @@ Thumbs.db
 
 # Project specific
 *.pdf
+# JSONL
+*.jsonl
 # Allow JSONL files in data folder
 !data/*.jsonl
-*.jsonl
-# Allow results folder
+# Allow results jsonl files (but keep other results ignored)
 !results/**/*.jsonl
 results/
 *.log
@@ -35,4 +36,5 @@ results/
 # Environment variables
 .env
 .env.local
+env.local
 
