@@ -79,7 +79,8 @@ def run_openai_eval(common: Any, args: Any) -> None:
     with open(args.out_jsonl, "w", encoding="utf-8") as f:
         for ex in tqdm(ds, desc=f"OpenAI eval ({args.model})"):
             qtype = common.infer_qtype(ex)
-            prompt = common.build_prompt(ex["problem"], qtype)
+            subject = getattr(common, "subject", "math")
+            prompt = common.build_prompt(ex["problem"], qtype, subject)
 
             text = call_openai(prompt)
 
@@ -174,7 +175,8 @@ def run_transformers_eval(common: Any, args: Any) -> None:
     with open(args.out_jsonl, "w", encoding="utf-8") as f:
         for ex in tqdm(ds, desc=f"HF eval ({args.model})"):
             qtype = common.infer_qtype(ex)
-            prompt = common.build_prompt(ex["problem"], qtype)
+            subject = getattr(common, "subject", "math")
+            prompt = common.build_prompt(ex["problem"], qtype, subject)
 
             text = generate(prompt)
 
