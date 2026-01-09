@@ -1,15 +1,12 @@
 {
-  "dataset": "cfpark00/KoreanSAT",
+  "dataset": "mahalisyarifuddin/korean-csat-2025-english",
   "config": null,
   "revision": null,
   "format": "jsonl",
   "splits": [
-    "2022_math",
-    "2023_math",
-    "2024_math",
-    "2025_math"
+    "train"
   ],
   "max_samples": 0,
   "out_dir": "C:\\Users\\user\\Documents\\csat-eval\\data",
-  "naming": "{split}.jsonl"
+  "naming": "2025_english.jsonl"
 }
