@@ -334,3 +334,93 @@ def run_transformers_eval(common: Any, args: Any) -> None:
     print_human_summary(summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
+
+def run_vllm_eval(common: Any, args: Any) -> None:
+    """vLLM 서버를 통해 평가 (OpenAI 호환 API)"""
+    import os
+    from openai import OpenAI
+    from tenacity import retry, stop_after_attempt, wait_random_exponential
+
+    vllm_base_url = getattr(args, "vllm_base_url", None)
+    vllm_model_id = getattr(args, "vllm_model_id", None)
+    
+    if not vllm_base_url:
+        raise RuntimeError("--vllm_base_url을 설정하세요. (예: http://localhost:8000/v1)")
+    if not vllm_model_id:
+        raise RuntimeError("--vllm_model_id를 설정하세요.")
+
+    # vLLM 서버는 OpenAI 호환 API를 제공
+    client = OpenAI(
+        base_url=vllm_base_url,
+        api_key="dummy-key",  # vLLM은 API 키가 필요 없지만 필수 필드
+    )
+
+    ds = load_eval_split(args)
+    if args.max_samples and args.max_samples > 0:
+        ds = ds.select(range(min(args.max_samples, len(ds))))
+
+    @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
+    def call_vllm(prompt: str) -> str:
+        messages = [{"role": "user", "content": prompt}]
+        completion = client.chat.completions.create(
+            model=vllm_model_id,
+            messages=messages,
+            max_tokens=int(args.max_tokens),
+            temperature=float(args.temperature),
+        )
+        return completion.choices[0].message.content or ""
+
+    total_score = 0
+    max_score = 0
+    correct_cnt = 0
+
+    with open(args.out_jsonl, "w", encoding="utf-8") as f:
+        for ex in tqdm(ds, desc=f"vLLM eval ({vllm_model_id})"):
+            qtype = common.infer_qtype(ex)
+            subject = getattr(common, "subject", "math")
+            prompt = common.build_prompt(ex["problem"], qtype, subject)
+
+            text = call_vllm(prompt)
+
+            pred = common.extract_final_answer(text, qtype)
+            gt = int(ex["answer"])
+            is_correct = common.grade(pred, gt)
+
+            sc = int(ex["score"])
+            max_score += sc
+            if is_correct:
+                total_score += sc
+                correct_cnt += 1
+
+            row = common.EvalRow(
+                id=int(ex["id"]),
+                name=str(ex["name"]),
+                question_type=qtype,
+                ground_truth=gt,
+                model_answer=pred,
+                correct=is_correct,
+                score=sc,
+                raw_output=text,
+                problem=ex["problem"],
+                review=ex.get("review"),
+            )
+            f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")
+
+    summary = {
+        "backend": "vllm",
+        "vllm_base_url": vllm_base_url,
+        "model": vllm_model_id,
+        "data_dir": getattr(args, "data_dir", "./data"),
+        "split": args.split,
+        "n": len(ds),
+        "correct": correct_cnt,
+        "accuracy": (correct_cnt / len(ds)) if len(ds) else 0.0,
+        "score": total_score,
+        "max_score": max_score,
+        "max_tokens": int(args.max_tokens),
+        "temperature": float(args.temperature),
+    }
+
+    print_human_summary(summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+

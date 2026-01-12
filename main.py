@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional, Literal
 from csv_results import build_split_csv
 
-from evaluator import run_openai_eval, run_transformers_eval, run_gpt_oss_eval
+from evaluator import run_openai_eval, run_transformers_eval, run_gpt_oss_eval, run_vllm_eval
 
 QType = Literal["mc", "sa"]
 
@@ -133,7 +133,7 @@ def _infer_mode_from_model(model: str) -> str:
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--mode", choices=["openai", "transformers", "gpt-oss"], default=None, 
+    ap.add_argument("--mode", choices=["openai", "transformers", "gpt-oss", "vllm"], default=None, 
                     help="평가 모드 (지정하지 않으면 모델 이름으로 자동 판별)")
     ap.add_argument("--source", choices=["local"], default="local")
     ap.add_argument("--data_dir", default="./data")
@@ -148,6 +148,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--reasoning_effort", choices=["none", "low", "medium", "high"], default="high",
                     help="gpt-oss 모델의 reasoning effort (none이면 사용 안함)")
+    
+    ap.add_argument("--vllm_base_url", default="",
+                    help="vLLM 서버 base URL (예: http://localhost:8000/v1)")
+    ap.add_argument("--vllm_model_id", default="",
+                    help="vLLM 서버에서 사용할 모델 ID")
 
     ap.add_argument("--store", action="store_true")
     ap.add_argument("--load_in_4bit", action="store_true")
@@ -187,6 +192,8 @@ def main():
         run_openai_eval(common, args)
     elif args.mode == "gpt-oss":
         run_gpt_oss_eval(common, args)
+    elif args.mode == "vllm":
+        run_vllm_eval(common, args)
     else:
         run_transformers_eval(common, args)
 
