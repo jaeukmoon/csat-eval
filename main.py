@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +18,12 @@ ANS_RE = re.compile(r"(?:정답|답|Answer)\s*[:：]?\s*(-?\d+)", re.IGNORECASE)
 INT_RE = re.compile(r"-?\d+")
 MC_RE = re.compile(r"\b([1-5])\b")
 
+# 과목명 매핑 (상수로 정의)
+SUBJECT_NAMES = {
+    "math": "수학",
+    "english": "영어",
+}
+
 
 def infer_qtype(example: Dict[str, Any]) -> QType:
     a = int(example["answer"])
@@ -26,12 +31,7 @@ def infer_qtype(example: Dict[str, Any]) -> QType:
 
 
 def build_prompt(problem_text: str, qtype: QType, subject: str = "math") -> str:
-    # 과목명 매핑 (나중에 다른 과목 추가 가능)
-    subject_names = {
-        "math": "수학",
-        "english": "영어",
-    }
-    subject_name = subject_names.get(subject, subject)  # 매핑이 없으면 원본 사용
+    subject_name = SUBJECT_NAMES.get(subject, subject)  # 매핑이 없으면 원본 사용
     
     if qtype == "mc":
         if subject == "english":
@@ -142,7 +142,6 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--model",default="gpt-5.1", help="openai model id OR hf model_name (mode에 따라 해석)")
     ap.add_argument("--max_tokens", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=0.0)
-    ap.add_argument("--reasoning_effort", choices=["low", "medium", "high"], default="high")
 
     ap.add_argument("--store", action="store_true")
     ap.add_argument("--load_in_4bit", action="store_true")
@@ -155,9 +154,9 @@ def parse_args() -> argparse.Namespace:
         args.mode = _infer_mode_from_model(args.model)
 
     model_name = _model_basename(args.model)
-    year, subject = _split_to_dirs(args.split)
+    args.year, args.subject = _split_to_dirs(args.split)
 
-    results_dir = Path("./results") / year / subject
+    results_dir = Path("./results") / args.year / args.subject
     results_dir.mkdir(parents=True, exist_ok=True)
 
     if not args.out_jsonl:
@@ -168,7 +167,6 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    year, subject = _split_to_dirs(args.split)
 
     common = SimpleNamespace(
         infer_qtype=infer_qtype,
@@ -176,18 +174,14 @@ def main():
         extract_final_answer=extract_final_answer,
         grade=grade,
         EvalRow=EvalRow,
-        subject=subject,  # subject를 common에 추가
+        subject=args.subject,  # subject를 common에 추가
     )
 
     if args.mode == "openai":
-        # if not os.getenv("OPENAI_API_KEY"):
-        #     raise RuntimeError("OPENAI_API_KEY 환경변수를 설정하세요.")
         run_openai_eval(common, args)
-        csv_path = build_split_csv(split=args.split, results_root="./results", out_dir=".")
-        print(f"CSV saved: {csv_path}") 
-        return
+    else:
+        run_transformers_eval(common, args)
 
-    run_transformers_eval(common, args)
     csv_path = build_split_csv(split=args.split, results_root="./results", out_dir=".")
     print(f"CSV saved: {csv_path}")
 
