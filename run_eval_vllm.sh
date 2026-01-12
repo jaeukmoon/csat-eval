@@ -22,8 +22,8 @@ MAX_SAMPLES=0
 # 최대 토큰 수
 MAX_TOKENS=512
 
-# Temperature
-TEMPERATURE=0.0
+# Temperature (빈 문자열이면 모델 기본값 사용)
+TEMPERATURE=""
 
 # 동시 요청 수 (비동기 병렬 처리용)
 CONCURRENCY=20
@@ -108,6 +108,12 @@ for dataset in "${DATASETS[@]}"; do
     echo "평가 시작: 모델=$VLLM_MODEL_ID, 데이터셋=$dataset"
     echo "=========================================="
     
+    # temperature가 설정되어 있으면 옵션 추가
+    TEMP_OPT=""
+    if [ -n "$TEMPERATURE" ]; then
+        TEMP_OPT="--temperature $TEMPERATURE"
+    fi
+    
     python main.py \
         --mode vllm \
         --vllm_base_url "$VLLM_BASE_URL" \
@@ -115,8 +121,8 @@ for dataset in "${DATASETS[@]}"; do
         --split "$dataset" \
         --max_samples "$MAX_SAMPLES" \
         --max_tokens "$MAX_TOKENS" \
-        --temperature "$TEMPERATURE" \
-        --concurrency "$CONCURRENCY"
+        --concurrency "$CONCURRENCY" \
+        $TEMP_OPT
     
     if [ $? -eq 0 ]; then
         echo "[SUCCESS] 완료: $VLLM_MODEL_ID on $dataset"

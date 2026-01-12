@@ -167,16 +167,7 @@ def parse_args() -> argparse.Namespace:
     if args.mode is None:
         args.mode = _infer_mode_from_model(args.model)
 
-    # temperature가 지정되지 않았으면 모델별 기본값 설정
-    if args.temperature is None:
-        if args.mode == "openai":
-            args.temperature = 1.0  # OpenAI 기본값
-        elif args.mode == "gpt-oss":
-            args.temperature = 0.0  # GPT-OSS는 deterministic
-        elif args.mode == "vllm":
-            args.temperature = 0.0  # vLLM은 deterministic
-        else:  # transformers
-            args.temperature = 0.0  # Transformers는 deterministic
+    # temperature가 None이면 각 API/모델의 기본값이 적용되도록 함
 
     # vLLM 모드에서는 vllm_model_id를 사용
     if args.mode == "vllm" and args.vllm_model_id:

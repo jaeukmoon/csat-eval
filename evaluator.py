@@ -223,16 +223,17 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
             else:
                 inputs = {k: v.to(mdl.device) for k, v in inputs.items()}
         
-        # generate 호출 (do_sample 처리)
-        temperature = float(getattr(args, "temperature", 0.0))  # GPT-OSS 기본값 0.0
-        do_sample = temperature > 0
-        outputs = mdl.generate(
-            **inputs,
-            max_new_tokens=int(args.max_tokens),
-            do_sample=do_sample,
-            temperature=temperature if do_sample else None,
-            pad_token_id=tok.eos_token_id,
-        )
+        # generate 호출 (temperature가 None이면 모델 기본값 사용)
+        temperature = getattr(args, "temperature", None)
+        gen_kwargs = {
+            "max_new_tokens": int(args.max_tokens),
+            "pad_token_id": tok.eos_token_id,
+        }
+        if temperature is not None:
+            gen_kwargs["do_sample"] = float(temperature) > 0
+            if gen_kwargs["do_sample"]:
+                gen_kwargs["temperature"] = float(temperature)
+        outputs = mdl.generate(**inputs, **gen_kwargs)
         decoded = tok.decode(outputs[0], skip_special_tokens=False)
         return decoded
 
@@ -322,14 +323,17 @@ def run_transformers_eval(common: Any, args: Any) -> None:
     def generate(prompt: str) -> str:
         text_in = format_as_chat(prompt)
         inputs = tok(text_in, return_tensors="pt").to(mdl.device)
-        do_sample = float(getattr(args, "temperature", 0.0)) > 0.0
-        gen = mdl.generate(
-            **inputs,
-            max_new_tokens=int(args.max_tokens),
-            do_sample=do_sample,
-            temperature=float(args.temperature) if do_sample else None,
-            pad_token_id=tok.eos_token_id,
-        )
+        # temperature가 None이면 모델 기본값 사용
+        temperature = getattr(args, "temperature", None)
+        gen_kwargs = {
+            "max_new_tokens": int(args.max_tokens),
+            "pad_token_id": tok.eos_token_id,
+        }
+        if temperature is not None:
+            gen_kwargs["do_sample"] = float(temperature) > 0
+            if gen_kwargs["do_sample"]:
+                gen_kwargs["temperature"] = float(temperature)
+        gen = mdl.generate(**inputs, **gen_kwargs)
         out = tok.decode(gen[0], skip_special_tokens=True)
         idx = out.rfind("문제:")
         return out[idx:] if idx != -1 else out
@@ -425,13 +429,16 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
     async def call_vllm(prompt: str) -> str:
         async with semaphore:
             messages = [{"role": "user", "content": prompt}]
-            temperature = float(getattr(args, "temperature", 0.0))  # vLLM 기본값 0.0
-            completion = await client.chat.completions.create(
-                model=vllm_model_id,
-                messages=messages,
-                max_tokens=int(args.max_tokens),
-                temperature=temperature,
-            )
+            # temperature가 None이면 서버 기본값 사용
+            create_kwargs = {
+                "model": vllm_model_id,
+                "messages": messages,
+                "max_tokens": int(args.max_tokens),
+            }
+            temperature = getattr(args, "temperature", None)
+            if temperature is not None:
+                create_kwargs["temperature"] = float(temperature)
+            completion = await client.chat.completions.create(**create_kwargs)
             return completion.choices[0].message.content or ""
 
     # 통계를 위한 공유 변수
