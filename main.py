@@ -145,7 +145,8 @@ def parse_args() -> argparse.Namespace:
     # "/group-volume/models/LGAI-EXAONE/K-EXAONE-236B-A23B"
     ap.add_argument("--model",default="gpt-5.1", help="openai model id OR hf model_name (mode에 따라 해석)")
     ap.add_argument("--max_tokens", type=int, default=512)
-    ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--temperature", type=float, default=None,
+                    help="생성 시 temperature (지정하지 않으면 모델별 기본값 사용)")
     ap.add_argument("--reasoning_effort", choices=["none", "low", "medium", "high"], default="high",
                     help="gpt-oss 모델의 reasoning effort (none이면 사용 안함)")
     
@@ -165,6 +166,17 @@ def parse_args() -> argparse.Namespace:
     # mode가 지정되지 않았으면 모델 이름으로 자동 판별
     if args.mode is None:
         args.mode = _infer_mode_from_model(args.model)
+
+    # temperature가 지정되지 않았으면 모델별 기본값 설정
+    if args.temperature is None:
+        if args.mode == "openai":
+            args.temperature = 1.0  # OpenAI 기본값
+        elif args.mode == "gpt-oss":
+            args.temperature = 0.0  # GPT-OSS는 deterministic
+        elif args.mode == "vllm":
+            args.temperature = 0.0  # vLLM은 deterministic
+        else:  # transformers
+            args.temperature = 0.0  # Transformers는 deterministic
 
     # vLLM 모드에서는 vllm_model_id를 사용
     if args.mode == "vllm" and args.vllm_model_id:

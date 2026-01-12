@@ -224,12 +224,13 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
                 inputs = {k: v.to(mdl.device) for k, v in inputs.items()}
         
         # generate 호출 (do_sample 처리)
-        do_sample = float(args.temperature) > 0
+        temperature = float(getattr(args, "temperature", 0.0))  # GPT-OSS 기본값 0.0
+        do_sample = temperature > 0
         outputs = mdl.generate(
             **inputs,
             max_new_tokens=int(args.max_tokens),
             do_sample=do_sample,
-            temperature=float(args.temperature) if do_sample else None,
+            temperature=temperature if do_sample else None,
             pad_token_id=tok.eos_token_id,
         )
         decoded = tok.decode(outputs[0], skip_special_tokens=False)
@@ -424,11 +425,12 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
     async def call_vllm(prompt: str) -> str:
         async with semaphore:
             messages = [{"role": "user", "content": prompt}]
+            temperature = float(getattr(args, "temperature", 0.0))  # vLLM 기본값 0.0
             completion = await client.chat.completions.create(
                 model=vllm_model_id,
                 messages=messages,
                 max_tokens=int(args.max_tokens),
-                temperature=float(args.temperature),
+                temperature=temperature,
             )
             return completion.choices[0].message.content or ""
 
