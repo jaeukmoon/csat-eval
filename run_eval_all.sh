@@ -9,6 +9,7 @@ MODELS=(
     "gpt-5.2"
     "meta-llama/Llama-3.3-70B-Instruct"
     # "/group-volume/models/meta-llama/Llama-3.3-70B-Instruct"  # 로컬 경로 예시
+    # "/folder/openai/gpt-oss-120b"  # gpt-oss 모델 예시
 )
 
 # 데이터셋 리스트 (split 이름)
@@ -19,25 +20,56 @@ DATASETS=(
     "2023_math"
     "2022_math"
     "2026_math"
+    "2026_english"
 )
 
 # 최대 샘플 수 (0이면 전체, 테스트용으로는 작은 숫자 사용)
 MAX_SAMPLES=0
 
-# 각 모델과 데이터셋 조합에 대해 평가 실행
-# mode는 모델 이름으로 자동 판별됨 (--mode 옵션 제거)
+# reasoning_effort 설정 (gpt-oss/Qwen 모델용: none, low, medium, high)
+REASONING_EFFORT="high"
+
+# ========================================
+# 1단계: 데이터셋 자동 생성 (없는 경우만)
+# ========================================
+echo "=========================================="
+echo "데이터셋 확인 및 생성 중..."
+echo "=========================================="
+
+for dataset in "${DATASETS[@]}"; do
+    if [ ! -f "./data/${dataset}.jsonl" ]; then
+        echo "데이터셋 생성: $dataset"
+        python -m data_builder.main --split "$dataset" --data_dir ./data --pdf_dir ./pdf_csat_data
+        if [ $? -ne 0 ]; then
+            echo "[WARNING] 데이터셋 생성 실패: $dataset (평가에서 제외됨)"
+        fi
+    else
+        echo "데이터셋 존재: $dataset"
+    fi
+done
+
+echo ""
+
+# ========================================
+# 2단계: 각 모델과 데이터셋 조합에 대해 평가 실행
+# ========================================
 for model in "${MODELS[@]}"; do
     for dataset in "${DATASETS[@]}"; do
+        # 데이터셋이 없으면 스킵
+        if [ ! -f "./data/${dataset}.jsonl" ]; then
+            echo "[SKIP] 데이터셋 없음: $dataset"
+            continue
+        fi
+        
         echo "=========================================="
         echo "평가 시작: 모델=$model, 데이터셋=$dataset"
         echo "=========================================="
         
-        # CSV 생성을 건너뛰기 위해 --no-csv 플래그 추가 (또는 별도 스크립트로 분리)
-        # 일단은 기존대로 실행 (각 실행마다 CSV 업데이트)
         python main.py \
             --split "$dataset" \
             --model "$model" \
-            --max_samples "$MAX_SAMPLES"
+            --max_samples "$MAX_SAMPLES" \
+            --reasoning_effort "$REASONING_EFFORT"
         
         if [ $? -eq 0 ]; then
             echo "[SUCCESS] 완료: $model on $dataset"
@@ -49,14 +81,18 @@ for model in "${MODELS[@]}"; do
     done
 done
 
-# 모든 평가 완료 후 각 데이터셋별로 최종 CSV 생성
+# ========================================
+# 3단계: 모든 평가 완료 후 각 데이터셋별로 최종 CSV 생성
+# ========================================
 echo "=========================================="
 echo "최종 CSV 생성 중..."
 echo "=========================================="
 
 for dataset in "${DATASETS[@]}"; do
-    echo "CSV 생성: $dataset"
-    python -c "from csv_results import build_split_csv; build_split_csv('$dataset', results_root='./results', out_dir='.'); print('완료: $dataset')"
+    if [ -f "./data/${dataset}.jsonl" ]; then
+        echo "CSV 생성: $dataset"
+        python -c "from csv_results import build_split_csv; build_split_csv('$dataset', results_root='./results', out_dir='.'); print('완료: $dataset')"
+    fi
 done
 
 echo "=========================================="

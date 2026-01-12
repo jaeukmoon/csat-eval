@@ -1,8 +1,7 @@
-﻿from __future__ import annotations
+"""수학 PDF에서 JSONL 데이터셋 생성"""
+from __future__ import annotations
 
-import argparse
 import base64
-import io
 import json
 import os
 import re
@@ -97,7 +96,7 @@ def parse_answer_pdf_odd(answer_pdf: Path) -> Dict[Tuple[str, int], AnswerInfo]:
 
 
 def pdf_page_png_bytes(page, resolution: int, pdf_path: Path) -> bytes:
-    """PDF 페이지를 PNG 이미지로 변환 (ImageMagick 없이 PyMuPDF 사용)"""
+    """PDF 페이지를 PNG 이미지로 변환 (PyMuPDF 사용)"""
     try:
         import fitz  # PyMuPDF
     except ImportError:
@@ -106,19 +105,15 @@ def pdf_page_png_bytes(page, resolution: int, pdf_path: Path) -> bytes:
             "또는 pdf2image를 사용하려면: pip install pdf2image"
         )
     
-    # pdfplumber의 page 객체에서 페이지 번호 추출
     page_num = page.page_number - 1  # PyMuPDF는 0-based index 사용
     
-    # PyMuPDF로 PDF 열기 및 페이지 렌더링
     doc = fitz.open(str(pdf_path))
     pdf_page = doc[page_num]
     
-    # DPI를 resolution에 맞게 조정 (pdfplumber의 resolution은 DPI와 유사)
     zoom = resolution / 72.0  # 기본 DPI는 72
     mat = fitz.Matrix(zoom, zoom)
     pix = pdf_page.get_pixmap(matrix=mat)
     
-    # PNG 바이트로 변환
     png_bytes = pix.tobytes("png")
     doc.close()
     
@@ -147,7 +142,7 @@ def extract_problems_with_openai_vision(
     out: Dict[Tuple[str, int], str] = {}
 
     base_prompt = (
-        "다음 이미지는 2026학년도 수능 수학 영역 문제지(홀수형)의 한 페이지입니다.\n"
+        "다음 이미지는 수능 수학 영역 문제지(홀수형)의 한 페이지입니다.\n"
         "페이지에 있는 문항들을 모두 추출해서 JSON 배열만 출력하세요.\n"
         "각 원소는 다음 키를 가진 객체입니다:\n"
         "- subject: common | probstat | calculus | geometry\n"
@@ -230,18 +225,20 @@ def row_name(uid: int) -> str:
     return str(uid)
 
 
-def build_jsonl(
+def build_math_jsonl(
     problem_pdf: Path,
     answer_pdf: Path,
     out_path: Path,
-    vision_model: str,
-    vision_detail: str,
-    max_output_tokens: int,
-    resolution: int,
-    force: bool,
+    vision_model: str = "gpt-5.2",
+    vision_detail: str = "high",
+    max_output_tokens: int = 6000,
+    resolution: int = 220,
+    force: bool = False,
 ) -> Path:
+    """수학 PDF에서 JSONL 데이터셋 생성"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists() and not force:
+        print(f"[math_pdf] Already exists: {out_path}")
         return out_path
 
     ans_map = parse_answer_pdf_odd(answer_pdf)
@@ -293,36 +290,5 @@ def build_jsonl(
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+    print(f"[math_pdf] Created: {out_path}")
     return out_path
-
-
-def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--problem_pdf", default="2026수능수학문제.pdf")
-    ap.add_argument("--answer_pdf", default="2026수능수학정답.pdf")
-    ap.add_argument("--out_jsonl", default="./2026_math.jsonl")
-    ap.add_argument("--vision_model", default="gpt-5.2")
-    ap.add_argument("--vision_detail", choices=["low", "high"], default="high")
-    ap.add_argument("--max_output_tokens", type=int, default=6000)
-    ap.add_argument("--resolution", type=int, default=220)
-    ap.add_argument("--force", action="store_true")
-    return ap.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    out = build_jsonl(
-        problem_pdf=Path(args.problem_pdf),
-        answer_pdf=Path(args.answer_pdf),
-        out_path=Path(args.out_jsonl),
-        vision_model=args.vision_model,
-        vision_detail=args.vision_detail,
-        max_output_tokens=int(args.max_output_tokens),
-        resolution=int(args.resolution),
-        force=bool(args.force),
-    )
-    print(str(out.resolve()))
-
-
-if __name__ == "__main__":
-    main()
