@@ -240,9 +240,10 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
     total_score = 0
     max_score = 0
     correct_cnt = 0
+    total = len(ds)
 
     with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        for ex in tqdm(ds, desc=f"gpt-oss eval ({args.model})"):
+        for idx, ex in enumerate(tqdm(ds, desc=f"gpt-oss eval ({args.model})"), start=1):
             qtype = common.infer_qtype(ex)
             subject = getattr(common, "subject", "math")
             prompt = common.build_prompt(ex["problem"], qtype, subject)
@@ -272,6 +273,13 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
                 review=ex.get("review"),
             )
             f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")
+            
+            # 중간 결과 출력
+            status = "✓" if is_correct else "✗"
+            acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
+            score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
+                  f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
 
     summary = {
         "backend": "gpt-oss",
@@ -341,9 +349,10 @@ def run_transformers_eval(common: Any, args: Any) -> None:
     total_score = 0
     max_score = 0
     correct_cnt = 0
+    total = len(ds)
 
     with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        for ex in tqdm(ds, desc=f"HF eval ({args.model})"):
+        for idx, ex in enumerate(tqdm(ds, desc=f"HF eval ({args.model})"), start=1):
             qtype = common.infer_qtype(ex)
             subject = getattr(common, "subject", "math")
             prompt = common.build_prompt(ex["problem"], qtype, subject)
@@ -373,6 +382,13 @@ def run_transformers_eval(common: Any, args: Any) -> None:
                 review=ex.get("review"),
             )
             f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")
+            
+            # 중간 결과 출력
+            status = "✓" if is_correct else "✗"
+            acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
+            score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
+                  f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
 
     summary = {
         "backend": "transformers",
