@@ -125,12 +125,15 @@ def build_split_csv(
                 if it is None:
                     row.append("(포기)")
                     continue
+                # 모델 답안 가져오기
+                ans = _get_model_answer(it)
+                ans_str = _format_answer(ans)
                 # correct 필드 확인하여 (o) 또는 (x) 표시
                 is_correct = bool(it.get("correct", False))
                 if is_correct:
-                    row.append("(o)")
+                    row.append(f"{ans_str} (o)")
                 else:
-                    row.append("(x)")
+                    row.append(f"{ans_str} (x)")
 
             w.writerow(row)
 
