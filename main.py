@@ -153,6 +153,8 @@ def parse_args() -> argparse.Namespace:
                     help="vLLM 서버 base URL (예: http://localhost:8000/v1)")
     ap.add_argument("--vllm_model_id", default="",
                     help="vLLM 서버에서 사용할 모델 ID")
+    ap.add_argument("--concurrency", type=int, default=10,
+                    help="동시 요청 수 (OpenAI/vLLM 비동기 처리용, 기본값: 10)")
 
     ap.add_argument("--store", action="store_true")
     ap.add_argument("--load_in_4bit", action="store_true")
