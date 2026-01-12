@@ -196,27 +196,41 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
         messages = [{"role": "user", "content": prompt}]
         reasoning_effort = getattr(args, "reasoning_effort", "high")
         
-        chat_kwargs = {}
         if is_qwen:
-            # Qwen: enable_thinking 사용 (reasoning_effort가 high면 on)
-            chat_kwargs["enable_thinking"] = (reasoning_effort == "high")
+            # Qwen: tokenize=False로 문자열 생성 후 별도 토큰화
+            text_in = tok.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=(reasoning_effort == "high")
+            )
+            inputs = tok(text_in, return_tensors="pt").to(mdl.device)
         else:
-            # gpt-oss: reasoning_effort 사용
+            # GPT-OSS: reasoning_effort 사용
+            chat_kwargs = {}
             if reasoning_effort != "none":
                 chat_kwargs["reasoning_effort"] = reasoning_effort
+            
+            inputs = tok.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+                **chat_kwargs
+            )
+            # 텐서를 dict로 변환 (generate에서 사용)
+            if isinstance(inputs, torch.Tensor):
+                inputs = {"input_ids": inputs.to(mdl.device)}
+            else:
+                inputs = {k: v.to(mdl.device) for k, v in inputs.items()}
         
-        inputs = tok.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            return_dict=True,
-            **chat_kwargs
-        ).to(mdl.device)
-        
+        # generate 호출 (do_sample 처리)
+        do_sample = float(args.temperature) > 0
         outputs = mdl.generate(
             **inputs,
             max_new_tokens=int(args.max_tokens),
-            temperature=float(args.temperature) if float(args.temperature) > 0 else None,
+            do_sample=do_sample,
+            temperature=float(args.temperature) if do_sample else None,
+            pad_token_id=tok.eos_token_id,
         )
         decoded = tok.decode(outputs[0], skip_special_tokens=False)
         return decoded
