@@ -2,34 +2,50 @@
 # vLLM 서버를 통한 단일 모델 평가 스크립트
 
 # ========================================
-# 사용자 입력 받기
+# 설정 (여기에 값을 입력하세요)
+# ========================================
+
+# vLLM 서버 주소 (예: http://localhost:8000/v1)
+VLLM_BASE_URL="http://localhost:8000/v1"
+
+# vLLM 서버에 로드된 모델 ID (예: meta-llama/Llama-3.3-70B-Instruct)
+VLLM_MODEL_ID="meta-llama/Llama-3.3-70B-Instruct"
+
+# 평가할 데이터셋 (공백으로 구분, 또는 "all" 입력 시 모든 데이터셋)
+# 예: DATASETS_INPUT="2026_math 2026_english 2025_math"
+# 예: DATASETS_INPUT="all"
+DATASETS_INPUT="all"
+
+# 최대 샘플 수 (0이면 전체)
+MAX_SAMPLES=0
+
+# 최대 토큰 수
+MAX_TOKENS=512
+
+# Temperature
+TEMPERATURE=0.0
+
+# 동시 요청 수 (비동기 병렬 처리용)
+CONCURRENCY=20
+
+# ========================================
+# 설정 확인 및 데이터셋 처리
 # ========================================
 echo "=========================================="
 echo "vLLM 평가 설정"
 echo "=========================================="
-
-# vLLM 서버 주소 입력
-read -p "vLLM 서버 주소를 입력하세요 (예: http://localhost:8000/v1): " VLLM_BASE_URL
-if [ -z "$VLLM_BASE_URL" ]; then
-    echo "오류: vLLM 서버 주소가 입력되지 않았습니다."
-    exit 1
-fi
-
-# 모델 ID 입력
-read -p "모델 ID를 입력하세요 (예: meta-llama/Llama-3.3-70B-Instruct): " VLLM_MODEL_ID
-if [ -z "$VLLM_MODEL_ID" ]; then
-    echo "오류: 모델 ID가 입력되지 않았습니다."
-    exit 1
-fi
-
-# 데이터셋 리스트 입력
+echo "vLLM 서버: $VLLM_BASE_URL"
+echo "모델 ID: $VLLM_MODEL_ID"
+echo "최대 샘플 수: $MAX_SAMPLES"
+echo "최대 토큰 수: $MAX_TOKENS"
+echo "Temperature: $TEMPERATURE"
+echo "동시 요청 수: $CONCURRENCY"
+echo "=========================================="
 echo ""
-echo "평가할 데이터셋을 입력하세요 (공백으로 구분, 예: 2026_math 2026_english 2025_math):"
-echo "또는 'all'을 입력하면 모든 데이터셋에 대해 평가합니다."
-read -p "데이터셋: " DATASETS_INPUT
 
-if [ -z "$DATASETS_INPUT" ]; then
-    echo "오류: 데이터셋이 입력되지 않았습니다."
+if [ -z "$VLLM_BASE_URL" ] || [ -z "$VLLM_MODEL_ID" ]; then
+    echo "오류: VLLM_BASE_URL 또는 VLLM_MODEL_ID가 설정되지 않았습니다."
+    echo "스크립트 상단의 설정 부분을 확인하세요."
     exit 1
 fi
 
@@ -54,41 +70,12 @@ else
     DATASETS=($DATASETS_INPUT)
 fi
 
-# 최대 샘플 수 (0이면 전체)
-read -p "최대 샘플 수 (0이면 전체, Enter=0): " MAX_SAMPLES
-MAX_SAMPLES=${MAX_SAMPLES:-0}
-
-# 최대 토큰 수
-read -p "최대 토큰 수 (Enter=512): " MAX_TOKENS
-MAX_TOKENS=${MAX_TOKENS:-512}
-
-# Temperature
-read -p "Temperature (Enter=0.0): " TEMPERATURE
-TEMPERATURE=${TEMPERATURE:-0.0}
-
+echo "평가할 데이터셋: ${DATASETS[@]}"
 echo ""
-echo "=========================================="
-echo "설정 확인"
-echo "=========================================="
-echo "vLLM 서버: $VLLM_BASE_URL"
-echo "모델 ID: $VLLM_MODEL_ID"
-echo "데이터셋: ${DATASETS[@]}"
-echo "최대 샘플 수: $MAX_SAMPLES"
-echo "최대 토큰 수: $MAX_TOKENS"
-echo "Temperature: $TEMPERATURE"
-echo "=========================================="
-echo ""
-
-read -p "계속하시겠습니까? (y/n): " CONFIRM
-if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
-    echo "취소되었습니다."
-    exit 0
-fi
 
 # ========================================
 # 1단계: 데이터셋 자동 생성 (없는 경우만)
 # ========================================
-echo ""
 echo "=========================================="
 echo "데이터셋 확인 및 생성 중..."
 echo "=========================================="
@@ -128,7 +115,8 @@ for dataset in "${DATASETS[@]}"; do
         --split "$dataset" \
         --max_samples "$MAX_SAMPLES" \
         --max_tokens "$MAX_TOKENS" \
-        --temperature "$TEMPERATURE"
+        --temperature "$TEMPERATURE" \
+        --concurrency "$CONCURRENCY"
     
     if [ $? -eq 0 ]; then
         echo "[SUCCESS] 완료: $VLLM_MODEL_ID on $dataset"
@@ -146,13 +134,21 @@ echo "=========================================="
 echo "최종 CSV 생성 중..."
 echo "=========================================="
 
+# CSV 결과 저장 디렉토리 생성
+mkdir -p ./results/csv
+
 for dataset in "${DATASETS[@]}"; do
     if [ -f "./data/${dataset}.jsonl" ]; then
         echo "CSV 생성: $dataset"
-        python -c "from csv_results import build_split_csv; build_split_csv('$dataset', results_root='./results', out_dir='.'); print('완료: $dataset')"
+        python -c "from csv_results import build_split_csv; build_split_csv('$dataset', results_root='./results', out_dir='./results/csv'); print('완료: $dataset')"
     fi
 done
 
+echo ""
 echo "=========================================="
 echo "모든 평가 완료!"
+echo "=========================================="
+echo "결과 저장 위치:"
+echo "  - JSONL 결과: ./results/{년도}/{과목}/"
+echo "  - CSV 결과: ./results/csv/"
 echo "=========================================="
