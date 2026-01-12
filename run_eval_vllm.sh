@@ -25,6 +25,7 @@ fi
 # 데이터셋 리스트 입력
 echo ""
 echo "평가할 데이터셋을 입력하세요 (공백으로 구분, 예: 2026_math 2026_english 2025_math):"
+echo "또는 'all'을 입력하면 모든 데이터셋에 대해 평가합니다."
 read -p "데이터셋: " DATASETS_INPUT
 
 if [ -z "$DATASETS_INPUT" ]; then
@@ -32,8 +33,26 @@ if [ -z "$DATASETS_INPUT" ]; then
     exit 1
 fi
 
-# 공백으로 구분된 입력을 배열로 변환
-DATASETS=($DATASETS_INPUT)
+# "all" 입력 시 모든 데이터셋 자동 탐지
+if [ "$DATASETS_INPUT" = "all" ] || [ "$DATASETS_INPUT" = "ALL" ]; then
+    echo "모든 데이터셋을 자동으로 탐지합니다..."
+    DATASETS=()
+    for jsonl_file in ./data/*.jsonl; do
+        if [ -f "$jsonl_file" ]; then
+            filename=$(basename "$jsonl_file")
+            dataset_name="${filename%.jsonl}"
+            DATASETS+=("$dataset_name")
+        fi
+    done
+    if [ ${#DATASETS[@]} -eq 0 ]; then
+        echo "오류: 데이터셋을 찾을 수 없습니다."
+        exit 1
+    fi
+    echo "발견된 데이터셋: ${DATASETS[@]}"
+else
+    # 공백으로 구분된 입력을 배열로 변환
+    DATASETS=($DATASETS_INPUT)
+fi
 
 # 최대 샘플 수 (0이면 전체)
 read -p "최대 샘플 수 (0이면 전체, Enter=0): " MAX_SAMPLES
