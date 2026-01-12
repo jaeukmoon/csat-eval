@@ -114,8 +114,8 @@ def _infer_mode_from_model(model: str) -> str:
     """모델 이름을 보고 자동으로 mode를 판별"""
     model_lower = model.lower().strip()
     
-    # gpt-oss 모델 패턴 (로컬에서 로드)
-    if "gpt-oss" in model_lower or "gpt_oss" in model_lower:
+    # gpt-oss 또는 Qwen 모델 패턴 (로컬에서 로드, reasoning 지원)
+    if "gpt-oss" in model_lower or "gpt_oss" in model_lower or "qwen" in model_lower:
         return "gpt-oss"
     
     # OpenAI 모델 패턴

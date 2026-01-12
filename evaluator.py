@@ -126,7 +126,7 @@ def run_openai_eval(common: Any, args: Any) -> None:
 
 
 def run_gpt_oss_eval(common: Any, args: Any) -> None:
-    """gpt-oss 모델을 로컬에서 로드하여 평가 (reasoning_effort 지원)"""
+    """gpt-oss/Qwen 모델을 로컬에서 로드하여 평가 (reasoning_effort/enable_thinking 지원)"""
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -147,15 +147,23 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
     )
     mdl.eval()
 
+    # Qwen 모델 여부 판별
+    model_lower = args.model.lower()
+    is_qwen = "qwen" in model_lower
+
     @torch.inference_mode()
     def generate(prompt: str) -> str:
         messages = [{"role": "user", "content": prompt}]
-        
-        # reasoning_effort 설정
-        chat_kwargs = {}
         reasoning_effort = getattr(args, "reasoning_effort", "high")
-        if reasoning_effort != "none":
-            chat_kwargs["reasoning_effort"] = reasoning_effort
+        
+        chat_kwargs = {}
+        if is_qwen:
+            # Qwen: enable_thinking 사용 (reasoning_effort가 high면 on)
+            chat_kwargs["enable_thinking"] = (reasoning_effort == "high")
+        else:
+            # gpt-oss: reasoning_effort 사용
+            if reasoning_effort != "none":
+                chat_kwargs["reasoning_effort"] = reasoning_effort
         
         inputs = tok.apply_chat_template(
             messages,
