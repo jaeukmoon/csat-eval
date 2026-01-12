@@ -14,9 +14,15 @@ QType = Literal["mc", "sa"]
 
 BOXED_RE = re.compile(r"\\boxed\{(-?\d+)\}")
 FINAL_RE = re.compile(r"FINAL\s*[:：]\s*(-?\d+)", re.IGNORECASE)
+# 원문자(①②③④⑤)도 매칭하는 패턴
+FINAL_CIRCLED_RE = re.compile(r"FINAL\s*[:：]\s*([①②③④⑤])", re.IGNORECASE)
 ANS_RE = re.compile(r"(?:정답|답|Answer)\s*[:：]?\s*(-?\d+)", re.IGNORECASE)
 INT_RE = re.compile(r"-?\d+")
 MC_RE = re.compile(r"\b([1-5])\b")
+CIRCLED_RE = re.compile(r"[①②③④⑤]")
+
+# 원문자를 숫자로 변환하는 딕셔너리
+CIRCLED_TO_INT = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
 
 # 과목명 매핑 (상수로 정의)
 SUBJECT_NAMES = {
@@ -53,10 +59,18 @@ def extract_final_answer(text: str, qtype: QType) -> Optional[int]:
     if not text:
         return None
 
+    # 숫자로 된 FINAL 패턴 먼저 확인
     m = FINAL_RE.search(text)
     if m:
         val = int(m.group(1))
         return val if (qtype == "sa" or 1 <= val <= 5) else None
+
+    # 원문자(①②③④⑤)로 된 FINAL 패턴 확인
+    m = FINAL_CIRCLED_RE.search(text)
+    if m:
+        val = CIRCLED_TO_INT.get(m.group(1))
+        if val is not None:
+            return val if (qtype == "sa" or 1 <= val <= 5) else None
 
     m = ANS_RE.search(text)
     if m:
@@ -69,6 +83,11 @@ def extract_final_answer(text: str, qtype: QType) -> Optional[int]:
         return val if (qtype == "sa" or 1 <= val <= 5) else None
 
     if qtype == "mc":
+        # 먼저 원문자 확인
+        all_circled = CIRCLED_RE.findall(text)
+        if all_circled:
+            return CIRCLED_TO_INT.get(all_circled[-1])
+        # 그 다음 일반 숫자 확인
         all_mc = MC_RE.findall(text)
         return int(all_mc[-1]) if all_mc else None
 
@@ -164,7 +183,11 @@ def parse_args() -> argparse.Namespace:
     if args.mode is None:
         args.mode = _infer_mode_from_model(args.model)
 
-    model_name = _model_basename(args.model)
+    # vLLM 모드에서는 vllm_model_id를 사용
+    if args.mode == "vllm" and args.vllm_model_id:
+        model_name = _model_basename(args.vllm_model_id)
+    else:
+        model_name = _model_basename(args.model)
     args.year, args.subject = _split_to_dirs(args.split)
 
     results_dir = Path("./results") / args.year / args.subject
