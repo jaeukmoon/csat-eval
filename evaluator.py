@@ -69,6 +69,7 @@ def run_openai_eval(common: Any, args: Any) -> None:
         completion = openai.chat.completions.create(
             model=args.model,
             messages=messages,
+            reasoning_effort="high",
         )
         return completion.choices[0].message.content or ""
 
@@ -123,6 +124,108 @@ def run_openai_eval(common: Any, args: Any) -> None:
     print_human_summary(summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
+
+def run_gpt_oss_eval(common: Any, args: Any) -> None:
+    """gpt-oss 모델을 로컬에서 로드하여 평가 (reasoning_effort 지원)"""
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+
+    ds = load_eval_split(args)
+    if args.max_samples and args.max_samples > 0:
+        ds = ds.select(range(min(args.max_samples, len(ds))))
+
+    kwargs = dict(device_map="auto")
+    if bool(getattr(args, "load_in_4bit", False)) or bool(getattr(args, "load_in_8bit", False)):
+        kwargs["load_in_4bit"] = bool(getattr(args, "load_in_4bit", False))
+        kwargs["load_in_8bit"] = bool(getattr(args, "load_in_8bit", False))
+
+    tok = AutoTokenizer.from_pretrained(args.model, add_eos_token=True)
+    mdl = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        torch_dtype="auto",
+        **kwargs,
+    )
+    mdl.eval()
+
+    @torch.inference_mode()
+    def generate(prompt: str) -> str:
+        messages = [{"role": "user", "content": prompt}]
+        
+        # reasoning_effort 설정
+        chat_kwargs = {}
+        reasoning_effort = getattr(args, "reasoning_effort", "high")
+        if reasoning_effort != "none":
+            chat_kwargs["reasoning_effort"] = reasoning_effort
+        
+        inputs = tok.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+            **chat_kwargs
+        ).to(mdl.device)
+        
+        outputs = mdl.generate(
+            **inputs,
+            max_new_tokens=int(args.max_tokens),
+            temperature=float(args.temperature) if float(args.temperature) > 0 else None,
+        )
+        decoded = tok.decode(outputs[0], skip_special_tokens=False)
+        return decoded
+
+    total_score = 0
+    max_score = 0
+    correct_cnt = 0
+
+    with open(args.out_jsonl, "w", encoding="utf-8") as f:
+        for ex in tqdm(ds, desc=f"gpt-oss eval ({args.model})"):
+            qtype = common.infer_qtype(ex)
+            subject = getattr(common, "subject", "math")
+            prompt = common.build_prompt(ex["problem"], qtype, subject)
+
+            text = generate(prompt)
+
+            pred = common.extract_final_answer(text, qtype)
+            gt = int(ex["answer"])
+            is_correct = common.grade(pred, gt)
+
+            sc = int(ex["score"])
+            max_score += sc
+            if is_correct:
+                total_score += sc
+                correct_cnt += 1
+
+            row = common.EvalRow(
+                id=int(ex["id"]),
+                name=str(ex["name"]),
+                question_type=qtype,
+                ground_truth=gt,
+                model_answer=pred,
+                correct=is_correct,
+                score=sc,
+                raw_output=text,
+                problem=ex["problem"],
+                review=ex.get("review"),
+            )
+            f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")
+
+    summary = {
+        "backend": "gpt-oss",
+        "model_name": args.model,
+        "data_dir": getattr(args, "data_dir", "./data"),
+        "split": args.split,
+        "n": len(ds),
+        "correct": correct_cnt,
+        "accuracy": (correct_cnt / len(ds)) if len(ds) else 0.0,
+        "score": total_score,
+        "max_score": max_score,
+        "max_new_tokens": int(args.max_tokens),
+        "temperature": float(getattr(args, "temperature", 0.0)),
+        "reasoning_effort": getattr(args, "reasoning_effort", "high"),
+    }
+
+    print_human_summary(summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def run_transformers_eval(common: Any, args: Any) -> None:
