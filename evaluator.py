@@ -73,6 +73,7 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
 
     # 동시 요청 수 제한 (rate limit 고려)
     semaphore = asyncio.Semaphore(getattr(args, "concurrency", 10))
+    file_lock = asyncio.Lock()  # 파일 쓰기 동기화용
 
     @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
     async def call_openai(prompt: str) -> str:
@@ -85,7 +86,20 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
             )
             return completion.choices[0].message.content or ""
 
+    # 통계를 위한 공유 변수
+    total_score = 0
+    max_score = 0
+    correct_cnt = 0
+    completed = 0
+    total = len(ds)
+
+    # 파일 초기화 (덮어쓰기 모드)
+    with open(args.out_jsonl, "w", encoding="utf-8") as f:
+        pass
+
     async def process_example(ex: Dict) -> Dict:
+        nonlocal total_score, max_score, correct_cnt, completed
+        
         qtype = common.infer_qtype(ex)
         subject = getattr(common, "subject", "math")
         prompt = common.build_prompt(ex["problem"], qtype, subject)
@@ -97,7 +111,7 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
         is_correct = common.grade(pred, gt)
         sc = int(ex["score"])
 
-        return {
+        result = {
             "id": int(ex["id"]),
             "name": str(ex["name"]),
             "question_type": qtype,
@@ -110,25 +124,30 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
             "review": ex.get("review"),
         }
 
+        # 결과를 즉시 파일에 쓰고 출력
+        async with file_lock:
+            with open(args.out_jsonl, "a", encoding="utf-8") as f:
+                f.write(json.dumps(result, ensure_ascii=False) + "\n")
+            
+            # 통계 업데이트
+            max_score += sc
+            if is_correct:
+                total_score += sc
+                correct_cnt += 1
+            completed += 1
+            
+            # 중간 결과 출력
+            status = "✓" if is_correct else "✗"
+            acc_pct = (correct_cnt / completed * 100.0) if completed > 0 else 0.0
+            score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            print(f"[{completed}/{total}] 문항 {result['id']}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
+                  f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{completed} ({acc_pct:.1f}%))")
+
+        return result
+
     # 모든 태스크를 병렬로 실행
     tasks = [process_example(ex) for ex in ds]
     results = await atqdm.gather(*tasks, desc=f"OpenAI eval ({args.model})")
-
-    # 결과 정렬 (id 순서대로)
-    results = sorted(results, key=lambda x: x["id"])
-
-    # 통계 계산 및 파일 저장
-    total_score = 0
-    max_score = 0
-    correct_cnt = 0
-
-    with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        for row in results:
-            if row["correct"]:
-                total_score += row["score"]
-                correct_cnt += 1
-            max_score += row["score"]
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     summary = {
         "backend": "openai",
@@ -385,6 +404,7 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
 
     # 동시 요청 수 제한
     semaphore = asyncio.Semaphore(getattr(args, "concurrency", 20))
+    file_lock = asyncio.Lock()  # 파일 쓰기 동기화용
 
     @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
     async def call_vllm(prompt: str) -> str:
@@ -398,7 +418,20 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
             )
             return completion.choices[0].message.content or ""
 
+    # 통계를 위한 공유 변수
+    total_score = 0
+    max_score = 0
+    correct_cnt = 0
+    completed = 0
+    total = len(ds)
+
+    # 파일 초기화 (덮어쓰기 모드)
+    with open(args.out_jsonl, "w", encoding="utf-8") as f:
+        pass
+
     async def process_example(ex: Dict) -> Dict:
+        nonlocal total_score, max_score, correct_cnt, completed
+        
         qtype = common.infer_qtype(ex)
         subject = getattr(common, "subject", "math")
         prompt = common.build_prompt(ex["problem"], qtype, subject)
@@ -410,7 +443,7 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
         is_correct = common.grade(pred, gt)
         sc = int(ex["score"])
 
-        return {
+        result = {
             "id": int(ex["id"]),
             "name": str(ex["name"]),
             "question_type": qtype,
@@ -423,25 +456,30 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
             "review": ex.get("review"),
         }
 
+        # 결과를 즉시 파일에 쓰고 출력
+        async with file_lock:
+            with open(args.out_jsonl, "a", encoding="utf-8") as f:
+                f.write(json.dumps(result, ensure_ascii=False) + "\n")
+            
+            # 통계 업데이트
+            max_score += sc
+            if is_correct:
+                total_score += sc
+                correct_cnt += 1
+            completed += 1
+            
+            # 중간 결과 출력
+            status = "✓" if is_correct else "✗"
+            acc_pct = (correct_cnt / completed * 100.0) if completed > 0 else 0.0
+            score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            print(f"[{completed}/{total}] 문항 {result['id']}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
+                  f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{completed} ({acc_pct:.1f}%))")
+
+        return result
+
     # 모든 태스크를 병렬로 실행
     tasks = [process_example(ex) for ex in ds]
     results = await atqdm.gather(*tasks, desc=f"vLLM eval ({vllm_model_id})")
-
-    # 결과 정렬 (id 순서대로)
-    results = sorted(results, key=lambda x: x["id"])
-
-    # 통계 계산 및 파일 저장
-    total_score = 0
-    max_score = 0
-    correct_cnt = 0
-
-    with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        for row in results:
-            if row["correct"]:
-                total_score += row["score"]
-                correct_cnt += 1
-            max_score += row["score"]
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     summary = {
         "backend": "vllm",
