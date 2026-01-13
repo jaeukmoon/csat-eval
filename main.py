@@ -179,9 +179,9 @@ def parse_args() -> argparse.Namespace:
     results_dir = Path("./results") / args.year / args.subject
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    # 결과 파일명: mode_modelid.jsonl
+    # 결과 파일명: modelid.jsonl
     if not args.out_jsonl:
-        args.out_jsonl = str(results_dir / f"{args.mode}_{model_name}.jsonl")
+        args.out_jsonl = str(results_dir / f"{model_name}.jsonl")
 
     return args
 
