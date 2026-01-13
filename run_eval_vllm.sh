@@ -28,6 +28,13 @@ TEMPERATURE=""
 # 동시 요청 수 (비동기 병렬 처리용)
 CONCURRENCY=20
 
+# 문항 ID 범위 필터링 (0이면 전체)
+START_ID=0
+END_ID=0
+
+# 기존 결과에 병합 (true/false)
+UPDATE_MODE=false
+
 # ========================================
 # 설정 확인 및 데이터셋 처리
 # ========================================
@@ -108,10 +115,19 @@ for dataset in "${DATASETS[@]}"; do
     echo "평가 시작: 모델=$VLLM_MODEL_ID, 데이터셋=$dataset"
     echo "=========================================="
     
-    # temperature가 설정되어 있으면 옵션 추가
-    TEMP_OPT=""
+    # 옵션 조합
+    EXTRA_OPTS=""
     if [ -n "$TEMPERATURE" ]; then
-        TEMP_OPT="--temperature $TEMPERATURE"
+        EXTRA_OPTS="$EXTRA_OPTS --temperature $TEMPERATURE"
+    fi
+    if [ "$START_ID" -gt 0 ]; then
+        EXTRA_OPTS="$EXTRA_OPTS --start_id $START_ID"
+    fi
+    if [ "$END_ID" -gt 0 ]; then
+        EXTRA_OPTS="$EXTRA_OPTS --end_id $END_ID"
+    fi
+    if [ "$UPDATE_MODE" = true ]; then
+        EXTRA_OPTS="$EXTRA_OPTS --update"
     fi
     
     python main.py \
@@ -122,7 +138,7 @@ for dataset in "${DATASETS[@]}"; do
         --max_samples "$MAX_SAMPLES" \
         --max_tokens "$MAX_TOKENS" \
         --concurrency "$CONCURRENCY" \
-        $TEMP_OPT
+        $EXTRA_OPTS
     
     if [ $? -eq 0 ]; then
         echo "[SUCCESS] 완료: $VLLM_MODEL_ID on $dataset"

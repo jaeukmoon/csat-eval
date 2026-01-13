@@ -143,6 +143,8 @@ def parse_args() -> argparse.Namespace:
                     help="시작 문항 ID (0이면 처음부터)")
     ap.add_argument("--end_id", type=int, default=0,
                     help="종료 문항 ID (0이면 끝까지)")
+    ap.add_argument("--update", action="store_true",
+                    help="기존 결과 파일에 병합 (해당 ID만 업데이트)")
 
     ap.add_argument("--out_jsonl", default="")
     # "/group-volume/models/meta-llama/Llama-3.3-70B-Instruct"

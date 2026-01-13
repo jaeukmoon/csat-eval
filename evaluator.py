@@ -66,6 +66,34 @@ def load_eval_split(args: Any):
     return ds
 
 
+def _load_existing_results(args: Any) -> Dict[int, Dict]:
+    """--update 모드일 때 기존 결과를 읽어서 ID별 딕셔너리로 반환"""
+    existing = {}
+    if getattr(args, "update", False) and Path(args.out_jsonl).exists():
+        with open(args.out_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    row = json.loads(line)
+                    existing[int(row["id"])] = row
+        print(f"[업데이트 모드] 기존 결과 {len(existing)}개 로드됨")
+    return existing
+
+
+def _save_merged_results(args: Any, existing: Dict[int, Dict], new_results: List[Dict]) -> None:
+    """기존 결과와 새 결과를 병합하여 저장"""
+    # 새 결과로 업데이트
+    for row in new_results:
+        existing[int(row["id"])] = row
+    
+    # ID 순으로 정렬해서 저장
+    merged = sorted(existing.values(), key=lambda x: int(x["id"]))
+    with open(args.out_jsonl, "w", encoding="utf-8") as f:
+        for row in merged:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"[저장 완료] 총 {len(merged)}개 문항")
+
+
 def run_openai_eval(common: Any, args: Any) -> None:
     """OpenAI API를 사용한 비동기 병렬 평가"""
     asyncio.run(_run_openai_eval_async(common, args))
@@ -108,11 +136,18 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
     completed = 0
     total = len(ds)
 
-    # 결과 디렉토리 생성 및 파일 초기화 (덮어쓰기 모드)
+    # 결과 디렉토리 생성
     out_path = Path(args.out_jsonl)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        pass
+    
+    # --update 모드: 기존 결과 로드, 아니면 파일 초기화
+    update_mode = getattr(args, "update", False)
+    existing_results = _load_existing_results(args) if update_mode else {}
+    if not update_mode:
+        with open(args.out_jsonl, "w", encoding="utf-8") as f:
+            pass
+
+    all_results = []  # 결과 수집용
 
     async def process_example(ex: Dict) -> Dict:
         nonlocal total_score, max_score, correct_cnt, completed
@@ -141,10 +176,12 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
             "review": ex.get("review"),
         }
 
-        # 결과를 즉시 파일에 쓰고 출력
         async with file_lock:
-            with open(args.out_jsonl, "a", encoding="utf-8") as f:
-                f.write(json.dumps(result, ensure_ascii=False) + "\n")
+            # update 모드가 아닐 때만 즉시 저장
+            if not update_mode:
+                with open(args.out_jsonl, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(result, ensure_ascii=False) + "\n")
+            all_results.append(result)
             
             # 통계 업데이트
             max_score += sc
@@ -167,6 +204,10 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
     # 모든 태스크를 병렬로 실행
     tasks = [process_example(ex) for ex in ds]
     results = await atqdm.gather(*tasks, desc=f"OpenAI eval ({args.model})")
+    
+    # update 모드일 때 병합 저장
+    if update_mode:
+        _save_merged_results(args, existing_results, all_results)
 
     summary = {
         "backend": "openai",
@@ -261,46 +302,67 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
     correct_cnt = 0
     total = len(ds)
 
-    with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        for idx, ex in enumerate(tqdm(ds, desc=f"gpt-oss eval ({args.model})"), start=1):
-            qtype = common.infer_qtype(ex)
-            subject = getattr(common, "subject", "math")
-            prompt = common.build_prompt(ex["problem"], qtype, subject)
+    # --update 모드: 기존 결과 로드
+    update_mode = getattr(args, "update", False)
+    existing_results = _load_existing_results(args) if update_mode else {}
+    all_results = []
 
-            text = generate(prompt)
+    # update 모드가 아니면 파일 초기화
+    if not update_mode:
+        out_path = Path(args.out_jsonl)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(args.out_jsonl, "w", encoding="utf-8")
+    else:
+        f = None
 
-            pred = common.extract_final_answer(text, qtype)
-            gt = int(ex["answer"])
-            is_correct = common.grade(pred, gt)
+    for idx, ex in enumerate(tqdm(ds, desc=f"gpt-oss eval ({args.model})"), start=1):
+        qtype = common.infer_qtype(ex)
+        subject = getattr(common, "subject", "math")
+        prompt = common.build_prompt(ex["problem"], qtype, subject)
 
-            sc = int(ex["score"])
-            max_score += sc
-            if is_correct:
-                total_score += sc
-                correct_cnt += 1
+        text = generate(prompt)
 
-            row = common.EvalRow(
-                id=int(ex["id"]),
-                name=str(ex["name"]),
-                question_type=qtype,
-                ground_truth=gt,
-                model_answer=pred,
-                correct=is_correct,
-                score=sc,
-                raw_output=text,
-                problem=ex["problem"],
-                review=ex.get("review"),
-            )
+        pred = common.extract_final_answer(text, qtype)
+        gt = int(ex["answer"])
+        is_correct = common.grade(pred, gt)
+
+        sc = int(ex["score"])
+        max_score += sc
+        if is_correct:
+            total_score += sc
+            correct_cnt += 1
+
+        row = common.EvalRow(
+            id=int(ex["id"]),
+            name=str(ex["name"]),
+            question_type=qtype,
+            ground_truth=gt,
+            model_answer=pred,
+            correct=is_correct,
+            score=sc,
+            raw_output=text,
+            problem=ex["problem"],
+            review=ex.get("review"),
+        )
+        all_results.append(row.__dict__)
+        if f:
             f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")
-            
-            # 중간 결과 출력
-            status = "✓" if is_correct else "✗"
-            acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
-            score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
-            output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
-            print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
-                  f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
-            print(f"       └─ 출력: \"{output_preview}\"")
+        
+        # 중간 결과 출력
+        status = "✓" if is_correct else "✗"
+        acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
+        score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+        output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
+        print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
+              f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
+        print(f"       └─ 출력: \"{output_preview}\"")
+
+    if f:
+        f.close()
+    
+    # update 모드일 때 병합 저장
+    if update_mode:
+        _save_merged_results(args, existing_results, all_results)
 
     summary = {
         "backend": "gpt-oss",
@@ -372,46 +434,67 @@ def run_transformers_eval(common: Any, args: Any) -> None:
     correct_cnt = 0
     total = len(ds)
 
-    with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        for idx, ex in enumerate(tqdm(ds, desc=f"HF eval ({args.model})"), start=1):
-            qtype = common.infer_qtype(ex)
-            subject = getattr(common, "subject", "math")
-            prompt = common.build_prompt(ex["problem"], qtype, subject)
+    # --update 모드: 기존 결과 로드
+    update_mode = getattr(args, "update", False)
+    existing_results = _load_existing_results(args) if update_mode else {}
+    all_results = []
 
-            text = generate(prompt)
+    # update 모드가 아니면 파일 초기화
+    if not update_mode:
+        out_path = Path(args.out_jsonl)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(args.out_jsonl, "w", encoding="utf-8")
+    else:
+        f = None
 
-            pred = common.extract_final_answer(text, qtype)
-            gt = int(ex["answer"])
-            is_correct = common.grade(pred, gt)
+    for idx, ex in enumerate(tqdm(ds, desc=f"HF eval ({args.model})"), start=1):
+        qtype = common.infer_qtype(ex)
+        subject = getattr(common, "subject", "math")
+        prompt = common.build_prompt(ex["problem"], qtype, subject)
 
-            sc = int(ex["score"])
-            max_score += sc
-            if is_correct:
-                total_score += sc
-                correct_cnt += 1
+        text = generate(prompt)
 
-            row = common.EvalRow(
-                id=int(ex["id"]),
-                name=str(ex["name"]),
-                question_type=qtype,
-                ground_truth=gt,
-                model_answer=pred,
-                correct=is_correct,
-                score=sc,
-                raw_output=text,
-                problem=ex["problem"],
-                review=ex.get("review"),
-            )
+        pred = common.extract_final_answer(text, qtype)
+        gt = int(ex["answer"])
+        is_correct = common.grade(pred, gt)
+
+        sc = int(ex["score"])
+        max_score += sc
+        if is_correct:
+            total_score += sc
+            correct_cnt += 1
+
+        row = common.EvalRow(
+            id=int(ex["id"]),
+            name=str(ex["name"]),
+            question_type=qtype,
+            ground_truth=gt,
+            model_answer=pred,
+            correct=is_correct,
+            score=sc,
+            raw_output=text,
+            problem=ex["problem"],
+            review=ex.get("review"),
+        )
+        all_results.append(row.__dict__)
+        if f:
             f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")
-            
-            # 중간 결과 출력
-            status = "✓" if is_correct else "✗"
-            acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
-            score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
-            output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
-            print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
-                  f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
-            print(f"       └─ 출력: \"{output_preview}\"")
+        
+        # 중간 결과 출력
+        status = "✓" if is_correct else "✗"
+        acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
+        score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+        output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
+        print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
+              f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
+        print(f"       └─ 출력: \"{output_preview}\"")
+
+    if f:
+        f.close()
+    
+    # update 모드일 때 병합 저장
+    if update_mode:
+        _save_merged_results(args, existing_results, all_results)
 
     summary = {
         "backend": "transformers",
@@ -487,11 +570,18 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
     completed = 0
     total = len(ds)
 
-    # 결과 디렉토리 생성 및 파일 초기화 (덮어쓰기 모드)
+    # 결과 디렉토리 생성
     out_path = Path(args.out_jsonl)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out_jsonl, "w", encoding="utf-8") as f:
-        pass
+    
+    # --update 모드: 기존 결과 로드, 아니면 파일 초기화
+    update_mode = getattr(args, "update", False)
+    existing_results = _load_existing_results(args) if update_mode else {}
+    if not update_mode:
+        with open(args.out_jsonl, "w", encoding="utf-8") as f:
+            pass
+
+    all_results = []  # 결과 수집용
 
     async def process_example(ex: Dict) -> Dict:
         nonlocal total_score, max_score, correct_cnt, completed
@@ -520,10 +610,12 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
             "review": ex.get("review"),
         }
 
-        # 결과를 즉시 파일에 쓰고 출력
         async with file_lock:
-            with open(args.out_jsonl, "a", encoding="utf-8") as f:
-                f.write(json.dumps(result, ensure_ascii=False) + "\n")
+            # update 모드가 아닐 때만 즉시 저장
+            if not update_mode:
+                with open(args.out_jsonl, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(result, ensure_ascii=False) + "\n")
+            all_results.append(result)
             
             # 통계 업데이트
             max_score += sc
@@ -546,6 +638,10 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
     # 모든 태스크를 병렬로 실행
     tasks = [process_example(ex) for ex in ds]
     results = await atqdm.gather(*tasks, desc=f"vLLM eval ({vllm_model_id})")
+    
+    # update 모드일 때 병합 저장
+    if update_mode:
+        _save_merged_results(args, existing_results, all_results)
 
     summary = {
         "backend": "vllm",
