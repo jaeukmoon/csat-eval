@@ -140,8 +140,10 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
             status = "✓" if is_correct else "✗"
             acc_pct = (correct_cnt / completed * 100.0) if completed > 0 else 0.0
             score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
             print(f"[{completed}/{total}] 문항 {result['id']}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
                   f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{completed} ({acc_pct:.1f}%))")
+            print(f"       └─ 출력: \"{output_preview}\"")
 
         return result
 
@@ -278,8 +280,10 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
             status = "✓" if is_correct else "✗"
             acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
             score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
             print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
                   f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
+            print(f"       └─ 출력: \"{output_preview}\"")
 
     summary = {
         "backend": "gpt-oss",
@@ -387,8 +391,10 @@ def run_transformers_eval(common: Any, args: Any) -> None:
             status = "✓" if is_correct else "✗"
             acc_pct = (correct_cnt / idx * 100.0) if idx > 0 else 0.0
             score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
             print(f"[{idx}/{total}] 문항 {row.id}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
                   f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{idx} ({acc_pct:.1f}%))")
+            print(f"       └─ 출력: \"{output_preview}\"")
 
     summary = {
         "backend": "transformers",
@@ -511,8 +517,10 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
             status = "✓" if is_correct else "✗"
             acc_pct = (correct_cnt / completed * 100.0) if completed > 0 else 0.0
             score_pct = (total_score / max_score * 100.0) if max_score > 0 else 0.0
+            output_preview = text.replace('\n', ' ')[:80] + ("..." if len(text) > 80 else "")
             print(f"[{completed}/{total}] 문항 {result['id']}: 예측={pred if pred is not None else '(포기)'}, 정답={gt} {status} "
                   f"(점수: {total_score}/{max_score} ({score_pct:.1f}%), 정확도: {correct_cnt}/{completed} ({acc_pct:.1f}%))")
+            print(f"       └─ 출력: \"{output_preview}\"")
 
         return result
 
