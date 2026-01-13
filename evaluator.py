@@ -292,7 +292,7 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
         "score": total_score,
         "max_score": max_score,
         "max_new_tokens": int(args.max_tokens),
-        "temperature": float(getattr(args, "temperature", 0.0)),
+        "temperature": args.temperature,
         "reasoning_effort": getattr(args, "reasoning_effort", "high"),
     }
 
@@ -401,7 +401,7 @@ def run_transformers_eval(common: Any, args: Any) -> None:
         "score": total_score,
         "max_score": max_score,
         "max_new_tokens": int(args.max_tokens),
-        "temperature": float(getattr(args, "temperature", 0.0)),
+        "temperature": args.temperature,
         "load_in_4bit": bool(getattr(args, "load_in_4bit", False)),
         "load_in_8bit": bool(getattr(args, "load_in_8bit", False)),
     }
@@ -532,7 +532,7 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
         "score": total_score,
         "max_score": max_score,
         "max_tokens": int(args.max_tokens),
-        "temperature": float(args.temperature),
+        "temperature": args.temperature,
     }
 
     print_human_summary(summary)
