@@ -139,6 +139,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--data_dir", default="./data")
     ap.add_argument("--split", default="2025_math")
     ap.add_argument("--max_samples", type=int, default=0)
+    ap.add_argument("--start_id", type=int, default=0,
+                    help="시작 문항 ID (0이면 처음부터)")
+    ap.add_argument("--end_id", type=int, default=0,
+                    help="종료 문항 ID (0이면 끝까지)")
 
     ap.add_argument("--out_jsonl", default="")
     # "/group-volume/models/meta-llama/Llama-3.3-70B-Instruct"

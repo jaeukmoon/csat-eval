@@ -48,6 +48,21 @@ def load_eval_split(args: Any):
         raise FileNotFoundError(f"Local JSONL not found: {path}")
 
     ds = load_dataset("json", data_files=str(path), split="train")
+    
+    # ID 범위 필터링
+    start_id = getattr(args, "start_id", 0)
+    end_id = getattr(args, "end_id", 0)
+    if start_id > 0 or end_id > 0:
+        def filter_by_id(example):
+            eid = int(example["id"])
+            if start_id > 0 and eid < start_id:
+                return False
+            if end_id > 0 and eid > end_id:
+                return False
+            return True
+        ds = ds.filter(filter_by_id)
+        print(f"[필터링] ID 범위: {start_id if start_id > 0 else '처음'} ~ {end_id if end_id > 0 else '끝'} ({len(ds)}개 문항)")
+    
     return ds
 
 
