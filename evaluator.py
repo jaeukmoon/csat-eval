@@ -93,7 +93,9 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
     completed = 0
     total = len(ds)
 
-    # 파일 초기화 (덮어쓰기 모드)
+    # 결과 디렉토리 생성 및 파일 초기화 (덮어쓰기 모드)
+    out_path = Path(args.out_jsonl)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out_jsonl, "w", encoding="utf-8") as f:
         pass
 
@@ -470,7 +472,9 @@ async def _run_vllm_eval_async(common: Any, args: Any) -> None:
     completed = 0
     total = len(ds)
 
-    # 파일 초기화 (덮어쓰기 모드)
+    # 결과 디렉토리 생성 및 파일 초기화 (덮어쓰기 모드)
+    out_path = Path(args.out_jsonl)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out_jsonl, "w", encoding="utf-8") as f:
         pass
 
