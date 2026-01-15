@@ -50,13 +50,49 @@ def append_jsonl(out_path, row):
 # 문제 전처리 함수
 # ============================================================================
 
-def clean_problem_text(problem_text: str) -> str:
+def is_multiple_choice(problem_text: str) -> bool:
+    """객관식 문제인지 판별합니다."""
+    # itemize 환경이 있으면 객관식
+    return r"\begin{itemize}" in problem_text or r"\\begin{itemize}" in problem_text
+
+
+def remove_choices(problem_text: str) -> str:
+    """
+    객관식 문제에서 선택지를 제거하여 주관식으로 변환합니다.
+    
+    제거 패턴:
+    - \\begin{itemize} ... \\end{itemize} 블록 전체
+    """
+    text = problem_text
+    
+    # LaTeX itemize 환경 제거 (여러 패턴 시도)
+    # 패턴 1: \begin{itemize} ... \end{itemize}
+    text = re.sub(r'\\begin\{itemize\}.*?\\end\{itemize\}', '', text, flags=re.DOTALL)
+    
+    # 패턴 2: \\begin{itemize} ... \\end{itemize} (이스케이프된 버전)
+    text = re.sub(r'\\\\begin\{itemize\}.*?\\\\end\{itemize\}', '', text, flags=re.DOTALL)
+    
+    # 선택지 번호 패턴 제거 (1) (2) (3) (4) (5) 또는 ① ② ③ ④ ⑤
+    text = re.sub(r'\s*\([1-5]\)\s*[^\(\n]*', '', text)
+    text = re.sub(r'\s*[①②③④⑤]\s*[^\n]*', '', text)
+    
+    # 연속 공백/줄바꿈 정리
+    text = re.sub(r'\n\s*\n', '\n', text)
+    text = re.sub(r'  +', ' ', text)
+    
+    return text.strip()
+
+
+def clean_problem_text(problem_text: str, remove_mc_choices: bool = False) -> str:
     """
     문제 텍스트에서 번호와 점수를 제거합니다.
     
     제거 패턴:
     - 문제 번호: "1. ", "12. " 등 (문자열 시작 부분)
     - 점수 표시: "[2점]", "[3점]", "[4점]" 등
+    
+    Args:
+        remove_mc_choices: True면 객관식 선택지도 제거
     
     LaTeX 형식은 유지합니다.
     """
@@ -68,6 +104,10 @@ def clean_problem_text(problem_text: str) -> str:
     # 점수 표시 제거 ("[2점]", "[3점]" 등)
     text = re.sub(r'\s*\[\d+점\]\s*', ' ', text)
     
+    # 객관식 선택지 제거 (옵션)
+    if remove_mc_choices:
+        text = remove_choices(text)
+    
     # 연속 공백 정리
     text = re.sub(r'  +', ' ', text)
     
@@ -78,14 +118,19 @@ def clean_problem_text(problem_text: str) -> str:
 # 프롬프트 생성
 # ============================================================================
 
-def get_prompt(problem_text: str, request_sentences: list, generation_id: int = 0) -> str:
+def get_prompt(problem_text: str, request_sentences: list, generation_id: int = 0,
+               as_subjective: bool = False) -> str:
     """
     문제와 boxed 요청 문장을 조합하여 프롬프트를 생성합니다.
     
-    generation_id를 활용하여 다양한 프롬프트 변형을 생성합니다.
+    Args:
+        problem_text: 원본 문제 텍스트
+        request_sentences: boxed 요청 문장 리스트
+        generation_id: 생성 인덱스 (프롬프트 변형에 사용)
+        as_subjective: True면 객관식 선택지를 제거하여 주관식으로 변환
     """
-    # 문제 전처리 (번호/점수 제거)
-    cleaned_problem = clean_problem_text(problem_text)
+    # 문제 전처리 (번호/점수 제거, 선택지 제거 옵션)
+    cleaned_problem = clean_problem_text(problem_text, remove_mc_choices=as_subjective)
     
     # 해시 + generation_id로 문장 선택
     hash_code = hash(cleaned_problem) + generation_id
@@ -157,13 +202,11 @@ def format_output(problem: str, solution: str, answer: int, source: str,
         # prompt가 제공되면 그대로 사용, 아니면 cleaned_problem 사용
         human_message = prompt if prompt else cleaned_problem
         return {
-            "conversations": [
-                {"from": "human", "value": human_message},
-                {"from": "gpt", "value": solution}
+            "messages": [
+                {"role": "user", "content": human_message},
+                {"role": "assistant", "content": solution}
             ],
-            "source": source,
-            "answer": answer,
-            "generation_id": generation_id
+            "answer": answer
         }
     
     elif format_type == "alpaca":
@@ -197,11 +240,13 @@ def format_output(problem: str, solution: str, answer: int, source: str,
 
 def process_item(idx: tuple, problems: list, request_sentences: list, 
                  output_dir: str, base_url: str, model: str, 
-                 source: str, format_type: str):
+                 source: str, format_type: str, question_type: str = "multiples"):
     """
     단일 문제-생성 쌍을 처리합니다.
     
-    idx: (문제 인덱스, 생성 인덱스)
+    Args:
+        idx: (문제 인덱스, 생성 인덱스)
+        question_type: "multiples" (객관식) 또는 "subjectives" (주관식)
     """
     problem_idx, gen_idx = idx
     output_path = f"{output_dir}/{problem_idx}_{gen_idx}.jsonl"
@@ -212,13 +257,15 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
     
     req_start = time.time()
     start_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"SEND [{problem_idx}_{gen_idx}] | st={start_stamp}")
+    print(f"SEND [{problem_idx}_{gen_idx}] ({question_type}) | st={start_stamp}")
     
     MAX_RETRIES = 10
     BACKOFF_FACTOR = 2
     
     item = problems[problem_idx]
-    prompt = get_prompt(item['problem'], request_sentences, gen_idx)
+    # 주관식이면 선택지 제거
+    as_subjective = (question_type == "subjectives")
+    prompt = get_prompt(item['problem'], request_sentences, gen_idx, as_subjective=as_subjective)
     
     resp = None
     trial = 0
@@ -274,22 +321,25 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
 
 def run_generation(problems: list, request_sentences: list, output_dir: str,
                    base_url: str, model: str, source: str, format_type: str,
-                   n: int = 10, max_workers: int = 200):
+                   n: int = 10, max_workers: int = 200, question_type: str = "multiples"):
     """
     모든 문제에 대해 n번씩 풀이를 생성합니다.
+    
+    Args:
+        question_type: "multiples" (객관식) 또는 "subjectives" (주관식)
     """
     inputs = []
     for i in range(len(problems)):
         for j in range(n):
             inputs.append((i, j))
     
-    print(f"Total tasks: {len(inputs)} ({len(problems)} problems x {n} generations)")
+    print(f"Total tasks: {len(inputs)} ({len(problems)} problems x {n} generations) [{question_type}]")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
             executor.submit(
                 process_item, idx, problems, request_sentences, 
-                output_dir, base_url, model, source, format_type
+                output_dir, base_url, model, source, format_type, question_type
             ) 
             for idx in inputs
         ]
@@ -400,30 +450,58 @@ def main():
             problems = open_jsonl(file_path)
             print(f"Loaded {len(problems)} problems from {file_name}")
             
-            # 개별 결과 저장 디렉토리
-            each_output_dir = os.path.join(args.output_dir, source)
-            os.makedirs(each_output_dir, exist_ok=True)
-            result_dirs.append(each_output_dir)
+            # 객관식 문제만 필터링 (선택지가 있는 문제)
+            mc_problems = [(i, p) for i, p in enumerate(problems) if is_multiple_choice(p['problem'])]
+            print(f"  - 객관식 문제: {len(mc_problems)}개")
             
-            # 생성 실행
-            run_generation(
-                problems=problems,
-                request_sentences=request_sentences,
-                output_dir=each_output_dir,
-                base_url=args.base_url,
-                model=args.model,
-                source=source,
-                format_type=args.format,
-                n=args.n,
-                max_workers=args.worker
-            )
+            # 객관식 버전 생성 (multiples)
+            if mc_problems:
+                mc_output_dir = os.path.join(args.output_dir, source, "multiples")
+                os.makedirs(mc_output_dir, exist_ok=True)
+                result_dirs.append(mc_output_dir)
+                
+                print(f"\n[객관식 생성 시작]")
+                run_generation(
+                    problems=[p for _, p in mc_problems],
+                    request_sentences=request_sentences,
+                    output_dir=mc_output_dir,
+                    base_url=args.base_url,
+                    model=args.model,
+                    source=source,
+                    format_type=args.format,
+                    n=args.n,
+                    max_workers=args.worker,
+                    question_type="multiples"
+                )
+            
+            # 주관식 버전 생성 (subjectives) - 객관식 문제를 주관식으로 변환
+            if mc_problems:
+                subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
+                os.makedirs(subj_output_dir, exist_ok=True)
+                result_dirs.append(subj_output_dir)
+                
+                print(f"\n[주관식 변환 생성 시작]")
+                run_generation(
+                    problems=[p for _, p in mc_problems],
+                    request_sentences=request_sentences,
+                    output_dir=subj_output_dir,
+                    base_url=args.base_url,
+                    model=args.model,
+                    source=source,
+                    format_type=args.format,
+                    n=args.n,
+                    max_workers=args.worker,
+                    question_type="subjectives"
+                )
     else:
         # merge_only 모드: 기존 디렉토리 찾기
         for file_path in math_files:
             source = os.path.basename(file_path).replace('.jsonl', '')
-            each_output_dir = os.path.join(args.output_dir, source)
-            if os.path.exists(each_output_dir):
-                result_dirs.append(each_output_dir)
+            # multiples와 subjectives 폴더 모두 찾기
+            for qtype in ["multiples", "subjectives"]:
+                each_output_dir = os.path.join(args.output_dir, source, qtype)
+                if os.path.exists(each_output_dir):
+                    result_dirs.append(each_output_dir)
     
     # 결과 병합
     print(f"\n{'='*60}")
