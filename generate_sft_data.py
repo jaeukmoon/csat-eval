@@ -13,6 +13,9 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 
+# no_proxy 설정 (vLLM 서버 주소)
+os.environ["no_proxy"] = "localhost,127.0.0.1,10.0.74.208"
+
 # ============================================================================
 # 유틸리티 함수
 # ============================================================================
@@ -335,42 +338,6 @@ def find_math_files(data_dir: str) -> list:
 
 
 # ============================================================================
-# 환경변수 설정
-# ============================================================================
-
-def setup_no_proxy(additional_addresses: str = None):
-    """
-    no_proxy 환경변수를 설정합니다.
-    기존 값이 있으면 추가하고, 없으면 새로 설정합니다.
-    
-    Args:
-        additional_addresses: 추가할 주소 (쉼표로 구분된 문자열)
-                              예: "localhost,127.0.0.1,example.com"
-    """
-    current_no_proxy = os.environ.get("no_proxy", "")
-    
-    if additional_addresses:
-        # 기존 값이 있으면 쉼표로 구분하여 추가
-        if current_no_proxy:
-            # 중복 제거를 위해 리스트로 변환
-            addresses = [addr.strip() for addr in current_no_proxy.split(",") if addr.strip()]
-            new_addresses = [addr.strip() for addr in additional_addresses.split(",") if addr.strip()]
-            
-            # 중복 제거 후 합치기
-            all_addresses = list(set(addresses + new_addresses))
-            os.environ["no_proxy"] = ",".join(all_addresses)
-        else:
-            # 기존 값이 없으면 새로 설정
-            os.environ["no_proxy"] = additional_addresses
-        
-        print(f"[환경변수] no_proxy 설정: {os.environ['no_proxy']}")
-    else:
-        # additional_addresses가 없으면 기존 값만 출력
-        if current_no_proxy:
-            print(f"[환경변수] no_proxy (기존): {current_no_proxy}")
-
-
-# ============================================================================
 # 메인
 # ============================================================================
 
@@ -384,40 +351,22 @@ def main():
                         help="출력 디렉토리")
     parser.add_argument("--n", default=10, type=int,
                         help="문제당 생성 횟수")
-    parser.add_argument("--worker", default=200, type=int,
+    parser.add_argument("--worker", default=20, type=int,
                         help="동시 워커 수")
     parser.add_argument("--format", default="simple", type=str,
                         choices=["simple", "sharegpt", "alpaca"],
                         help="출력 형식")
     parser.add_argument("--base_url", 
-                        default="https://inference-gpt-oss-120b-train.n9.sr-cloud.com/v1",
+                        default="http://10.0.74.208:8000/v1",
                         type=str, help="vLLM 서버 URL")
-    parser.add_argument("--model", default="gpt-oss-120b", type=str,
+    parser.add_argument("--model", default="glm-4.7", type=str,
                         help="모델 이름")
     parser.add_argument("--merge_only", action="store_true",
                         help="생성 없이 기존 결과만 병합")
     parser.add_argument("--input_file", type=str, default=None,
                         help="특정 파일만 처리 (지정하지 않으면 모든 수학 파일 처리)")
-    parser.add_argument("--no_proxy", type=str, default=None,
-                        help="no_proxy 환경변수에 추가할 주소 (쉼표로 구분, 예: localhost,127.0.0.1)")
     
     args = parser.parse_args()
-    
-    # no_proxy 환경변수 설정 (가장 먼저 실행)
-    if args.no_proxy:
-        setup_no_proxy(args.no_proxy)
-    else:
-        # 기본값으로 vLLM 서버 주소 추출하여 설정
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(args.base_url)
-            host = parsed.hostname
-            if host:
-                # localhost, 127.0.0.1 등 기본 주소와 함께 설정
-                default_addresses = f"localhost,127.0.0.1,{host}"
-                setup_no_proxy(default_addresses)
-        except Exception as e:
-            print(f"[경고] no_proxy 자동 설정 실패: {e}")
     
     # boxed 요청 문장 로드
     sentences_path = os.path.join(args.data_dir, "sentences_ask_boxed.jsonl")
@@ -452,7 +401,7 @@ def main():
             print(f"Loaded {len(problems)} problems from {file_name}")
             
             # 개별 결과 저장 디렉토리
-            each_output_dir = os.path.join(args.output_dir, "res_each_query", source)
+            each_output_dir = os.path.join(args.output_dir, source)
             os.makedirs(each_output_dir, exist_ok=True)
             result_dirs.append(each_output_dir)
             
@@ -472,7 +421,7 @@ def main():
         # merge_only 모드: 기존 디렉토리 찾기
         for file_path in math_files:
             source = os.path.basename(file_path).replace('.jsonl', '')
-            each_output_dir = os.path.join(args.output_dir, "res_each_query", source)
+            each_output_dir = os.path.join(args.output_dir, source)
             if os.path.exists(each_output_dir):
                 result_dirs.append(each_output_dir)
     
