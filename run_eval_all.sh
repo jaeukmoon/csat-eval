@@ -110,8 +110,8 @@ echo "=========================================="
 
 for dataset in "${DATASETS[@]}"; do
     if [ -f "./data/${dataset}.jsonl" ]; then
-        echo "CSV 생성: $dataset"
-        python -c "from csv_results import build_split_csv; build_split_csv('$dataset', results_root='./results', out_dir='.'); print('완료: $dataset')"
+    echo "CSV 생성: $dataset"
+    python -c "from csv_results import build_split_csv; build_split_csv('$dataset', results_root='./results', out_dir='.'); print('완료: $dataset')"
     fi
 done
 

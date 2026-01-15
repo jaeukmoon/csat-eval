@@ -121,13 +121,13 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
     @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
     async def call_openai(prompt: str) -> str:
         async with semaphore:
-            messages = [{"role": "user", "content": prompt}]
+        messages = [{"role": "user", "content": prompt}]
             completion = await client.chat.completions.create(
-                model=args.model,
-                messages=messages,
+            model=args.model,
+            messages=messages,
                 reasoning_effort="high",
-            )
-            return completion.choices[0].message.content or ""
+        )
+        return completion.choices[0].message.content or ""
 
     # 통계를 위한 공유 변수
     total_score = 0
@@ -144,7 +144,7 @@ async def _run_openai_eval_async(common: Any, args: Any) -> None:
     update_mode = getattr(args, "update", False)
     existing_results = _load_existing_results(args) if update_mode else {}
     if not update_mode:
-        with open(args.out_jsonl, "w", encoding="utf-8") as f:
+    with open(args.out_jsonl, "w", encoding="utf-8") as f:
             pass
 
     all_results = []  # 결과 수집용
@@ -316,34 +316,34 @@ def run_gpt_oss_eval(common: Any, args: Any) -> None:
         f = None
 
     for idx, ex in enumerate(tqdm(ds, desc=f"gpt-oss eval ({args.model})"), start=1):
-        qtype = common.infer_qtype(ex)
-        subject = getattr(common, "subject", "math")
-        prompt = common.build_prompt(ex["problem"], qtype, subject)
+            qtype = common.infer_qtype(ex)
+            subject = getattr(common, "subject", "math")
+            prompt = common.build_prompt(ex["problem"], qtype, subject)
 
         text = generate(prompt)
 
-        pred = common.extract_final_answer(text, qtype)
-        gt = int(ex["answer"])
-        is_correct = common.grade(pred, gt)
+            pred = common.extract_final_answer(text, qtype)
+            gt = int(ex["answer"])
+            is_correct = common.grade(pred, gt)
 
-        sc = int(ex["score"])
-        max_score += sc
-        if is_correct:
-            total_score += sc
-            correct_cnt += 1
+            sc = int(ex["score"])
+            max_score += sc
+            if is_correct:
+                total_score += sc
+                correct_cnt += 1
 
-        row = common.EvalRow(
-            id=int(ex["id"]),
-            name=str(ex["name"]),
-            question_type=qtype,
-            ground_truth=gt,
-            model_answer=pred,
-            correct=is_correct,
-            score=sc,
-            raw_output=text,
-            problem=ex["problem"],
-            review=ex.get("review"),
-        )
+            row = common.EvalRow(
+                id=int(ex["id"]),
+                name=str(ex["name"]),
+                question_type=qtype,
+                ground_truth=gt,
+                model_answer=pred,
+                correct=is_correct,
+                score=sc,
+                raw_output=text,
+                problem=ex["problem"],
+                review=ex.get("review"),
+            )
         all_results.append(row.__dict__)
         if f:
             f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")
@@ -448,34 +448,34 @@ def run_transformers_eval(common: Any, args: Any) -> None:
         f = None
 
     for idx, ex in enumerate(tqdm(ds, desc=f"HF eval ({args.model})"), start=1):
-        qtype = common.infer_qtype(ex)
-        subject = getattr(common, "subject", "math")
-        prompt = common.build_prompt(ex["problem"], qtype, subject)
+            qtype = common.infer_qtype(ex)
+            subject = getattr(common, "subject", "math")
+            prompt = common.build_prompt(ex["problem"], qtype, subject)
 
-        text = generate(prompt)
+            text = generate(prompt)
 
-        pred = common.extract_final_answer(text, qtype)
-        gt = int(ex["answer"])
-        is_correct = common.grade(pred, gt)
+            pred = common.extract_final_answer(text, qtype)
+            gt = int(ex["answer"])
+            is_correct = common.grade(pred, gt)
 
-        sc = int(ex["score"])
-        max_score += sc
-        if is_correct:
-            total_score += sc
-            correct_cnt += 1
+            sc = int(ex["score"])
+            max_score += sc
+            if is_correct:
+                total_score += sc
+                correct_cnt += 1
 
-        row = common.EvalRow(
-            id=int(ex["id"]),
-            name=str(ex["name"]),
-            question_type=qtype,
-            ground_truth=gt,
-            model_answer=pred,
-            correct=is_correct,
-            score=sc,
-            raw_output=text,
-            problem=ex["problem"],
-            review=ex.get("review"),
-        )
+            row = common.EvalRow(
+                id=int(ex["id"]),
+                name=str(ex["name"]),
+                question_type=qtype,
+                ground_truth=gt,
+                model_answer=pred,
+                correct=is_correct,
+                score=sc,
+                raw_output=text,
+                problem=ex["problem"],
+                review=ex.get("review"),
+            )
         all_results.append(row.__dict__)
         if f:
             f.write(json.dumps(row.__dict__, ensure_ascii=False) + "\n")

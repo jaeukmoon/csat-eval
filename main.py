@@ -179,7 +179,7 @@ def parse_args() -> argparse.Namespace:
     if args.mode == "vllm" and args.vllm_model_id:
         model_name = _model_basename(args.vllm_model_id)
     else:
-        model_name = _model_basename(args.model)
+    model_name = _model_basename(args.model)
     args.year, args.subject = _split_to_dirs(args.split)
 
     results_dir = Path("./results") / args.year / args.subject
@@ -211,7 +211,7 @@ def main():
     elif args.mode == "vllm":
         run_vllm_eval(common, args)
     else:
-        run_transformers_eval(common, args)
+    run_transformers_eval(common, args)
 
     csv_path = build_split_csv(split=args.split, results_root="./results", out_dir=".")
     print(f"CSV saved: {csv_path}")
