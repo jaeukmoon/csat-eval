@@ -126,7 +126,8 @@ def send_msg(prompt: str, base_url: str, model: str = "gpt-oss-120b"):
 # ============================================================================
 
 def format_output(problem: str, solution: str, answer: int, source: str, 
-                  generation_id: int, format_type: str = "simple") -> dict:
+                  generation_id: int, format_type: str = "simple",
+                  prompt: str = None) -> dict:
     """
     결과를 지정된 형식으로 변환합니다.
     
@@ -134,6 +135,9 @@ def format_output(problem: str, solution: str, answer: int, source: str,
     - simple: 간단한 problem/solution 형식
     - sharegpt: ShareGPT 대화 형식
     - alpaca: Alpaca instruction 형식
+    
+    Args:
+        prompt: get_prompt()로 생성된 실제 프롬프트 (sharegpt/alpaca에서 사용)
     """
     cleaned_problem = clean_problem_text(problem)
     
@@ -147,9 +151,11 @@ def format_output(problem: str, solution: str, answer: int, source: str,
         }
     
     elif format_type == "sharegpt":
+        # prompt가 제공되면 그대로 사용, 아니면 cleaned_problem 사용
+        human_message = prompt if prompt else cleaned_problem
         return {
             "conversations": [
-                {"from": "human", "value": cleaned_problem + "\n\nReturn your final answer within \\boxed{}."},
+                {"from": "human", "value": human_message},
                 {"from": "gpt", "value": solution}
             ],
             "source": source,
@@ -158,14 +164,25 @@ def format_output(problem: str, solution: str, answer: int, source: str,
         }
     
     elif format_type == "alpaca":
-        return {
-            "instruction": "다음 수학 문제를 풀고, 최종 답을 \\boxed{} 안에 넣어주세요.",
-            "input": cleaned_problem,
-            "output": solution,
-            "answer": answer,
-            "source": source,
-            "generation_id": generation_id
-        }
+        # prompt가 제공되면 그대로 사용
+        if prompt:
+            return {
+                "instruction": prompt,
+                "input": "",
+                "output": solution,
+                "answer": answer,
+                "source": source,
+                "generation_id": generation_id
+            }
+        else:
+            return {
+                "instruction": "다음 수학 문제를 풀고, 최종 답을 \\boxed{} 안에 넣어주세요.",
+                "input": cleaned_problem,
+                "output": solution,
+                "answer": answer,
+                "source": source,
+                "generation_id": generation_id
+            }
     
     else:
         raise ValueError(f"Unknown format type: {format_type}")
@@ -231,14 +248,15 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
     solution = resp.choices[0].message.content
     answer = item.get('answer', None)
     
-    # 형식에 맞게 변환
+    # 형식에 맞게 변환 (생성된 프롬프트도 전달)
     formatted = format_output(
         problem=item['problem'],
         solution=solution,
         answer=answer,
         source=source,
         generation_id=gen_idx,
-        format_type=format_type
+        format_type=format_type,
+        prompt=prompt  # boxed 문장이 포함된 실제 프롬프트
     )
     
     # 저장
@@ -317,6 +335,42 @@ def find_math_files(data_dir: str) -> list:
 
 
 # ============================================================================
+# 환경변수 설정
+# ============================================================================
+
+def setup_no_proxy(additional_addresses: str = None):
+    """
+    no_proxy 환경변수를 설정합니다.
+    기존 값이 있으면 추가하고, 없으면 새로 설정합니다.
+    
+    Args:
+        additional_addresses: 추가할 주소 (쉼표로 구분된 문자열)
+                              예: "localhost,127.0.0.1,example.com"
+    """
+    current_no_proxy = os.environ.get("no_proxy", "")
+    
+    if additional_addresses:
+        # 기존 값이 있으면 쉼표로 구분하여 추가
+        if current_no_proxy:
+            # 중복 제거를 위해 리스트로 변환
+            addresses = [addr.strip() for addr in current_no_proxy.split(",") if addr.strip()]
+            new_addresses = [addr.strip() for addr in additional_addresses.split(",") if addr.strip()]
+            
+            # 중복 제거 후 합치기
+            all_addresses = list(set(addresses + new_addresses))
+            os.environ["no_proxy"] = ",".join(all_addresses)
+        else:
+            # 기존 값이 없으면 새로 설정
+            os.environ["no_proxy"] = additional_addresses
+        
+        print(f"[환경변수] no_proxy 설정: {os.environ['no_proxy']}")
+    else:
+        # additional_addresses가 없으면 기존 값만 출력
+        if current_no_proxy:
+            print(f"[환경변수] no_proxy (기존): {current_no_proxy}")
+
+
+# ============================================================================
 # 메인
 # ============================================================================
 
@@ -344,8 +398,26 @@ def main():
                         help="생성 없이 기존 결과만 병합")
     parser.add_argument("--input_file", type=str, default=None,
                         help="특정 파일만 처리 (지정하지 않으면 모든 수학 파일 처리)")
+    parser.add_argument("--no_proxy", type=str, default=None,
+                        help="no_proxy 환경변수에 추가할 주소 (쉼표로 구분, 예: localhost,127.0.0.1)")
     
     args = parser.parse_args()
+    
+    # no_proxy 환경변수 설정 (가장 먼저 실행)
+    if args.no_proxy:
+        setup_no_proxy(args.no_proxy)
+    else:
+        # 기본값으로 vLLM 서버 주소 추출하여 설정
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(args.base_url)
+            host = parsed.hostname
+            if host:
+                # localhost, 127.0.0.1 등 기본 주소와 함께 설정
+                default_addresses = f"localhost,127.0.0.1,{host}"
+                setup_no_proxy(default_addresses)
+        except Exception as e:
+            print(f"[경고] no_proxy 자동 설정 실패: {e}")
     
     # boxed 요청 문장 로드
     sentences_path = os.path.join(args.data_dir, "sentences_ask_boxed.jsonl")
