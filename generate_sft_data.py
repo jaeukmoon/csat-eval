@@ -450,49 +450,51 @@ def main():
             problems = open_jsonl(file_path)
             print(f"Loaded {len(problems)} problems from {file_name}")
             
-            # 객관식 문제만 필터링 (선택지가 있는 문제)
-            mc_problems = [(i, p) for i, p in enumerate(problems) if is_multiple_choice(p['problem'])]
-            print(f"  - 객관식 문제: {len(mc_problems)}개")
+            # 통계 출력
+            mc_count = sum(1 for p in problems if is_multiple_choice(p['problem']))
+            print(f"  - 객관식 문제: {mc_count}개, 주관식 문제: {len(problems) - mc_count}개")
             
             # 객관식 버전 생성 (multiples)
-            if mc_problems:
-                mc_output_dir = os.path.join(args.output_dir, source, "multiples")
-                os.makedirs(mc_output_dir, exist_ok=True)
-                result_dirs.append(mc_output_dir)
-                
-                print(f"\n[객관식 생성 시작]")
-                run_generation(
-                    problems=[p for _, p in mc_problems],
-                    request_sentences=request_sentences,
-                    output_dir=mc_output_dir,
-                    base_url=args.base_url,
-                    model=args.model,
-                    source=source,
-                    format_type=args.format,
-                    n=args.n,
-                    max_workers=args.worker,
-                    question_type="multiples"
-                )
+            # - 객관식 문제: 선택지 유지
+            # - 주관식 문제: 그대로
+            mc_output_dir = os.path.join(args.output_dir, source, "multiples")
+            os.makedirs(mc_output_dir, exist_ok=True)
+            result_dirs.append(mc_output_dir)
             
-            # 주관식 버전 생성 (subjectives) - 객관식 문제를 주관식으로 변환
-            if mc_problems:
-                subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
-                os.makedirs(subj_output_dir, exist_ok=True)
-                result_dirs.append(subj_output_dir)
-                
-                print(f"\n[주관식 변환 생성 시작]")
-                run_generation(
-                    problems=[p for _, p in mc_problems],
-                    request_sentences=request_sentences,
-                    output_dir=subj_output_dir,
-                    base_url=args.base_url,
-                    model=args.model,
-                    source=source,
-                    format_type=args.format,
-                    n=args.n,
-                    max_workers=args.worker,
-                    question_type="subjectives"
-                )
+            print(f"\n[객관식 버전 생성 시작] (전체 {len(problems)}개 문제)")
+            run_generation(
+                problems=problems,
+                request_sentences=request_sentences,
+                output_dir=mc_output_dir,
+                base_url=args.base_url,
+                model=args.model,
+                source=source,
+                format_type=args.format,
+                n=args.n,
+                max_workers=args.worker,
+                question_type="multiples"
+            )
+            
+            # 주관식 버전 생성 (subjectives)
+            # - 객관식 문제: 선택지 제거
+            # - 주관식 문제: 그대로
+            subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
+            os.makedirs(subj_output_dir, exist_ok=True)
+            result_dirs.append(subj_output_dir)
+            
+            print(f"\n[주관식 버전 생성 시작] (전체 {len(problems)}개 문제)")
+            run_generation(
+                problems=problems,
+                request_sentences=request_sentences,
+                output_dir=subj_output_dir,
+                base_url=args.base_url,
+                model=args.model,
+                source=source,
+                format_type=args.format,
+                n=args.n,
+                max_workers=args.worker,
+                question_type="subjectives"
+            )
     else:
         # merge_only 모드: 기존 디렉토리 찾기
         for file_path in math_files:
