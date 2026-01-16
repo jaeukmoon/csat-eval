@@ -58,6 +58,30 @@ def is_multiple_choice(problem_text: str) -> bool:
     return len(matches) >= 5
 
 
+def extract_choice_value(problem_text: str, choice_num: int) -> str:
+    """
+    객관식 문제에서 특정 번호 선택지의 값을 추출합니다.
+    
+    예: \\item[2] \\frac{1}{2} → choice_num=2 → "\\frac{1}{2}"
+    
+    Args:
+        problem_text: 문제 텍스트
+        choice_num: 선택지 번호 (1-5)
+    
+    Returns:
+        선택지 값 (추출 실패 시 원본 choice_num을 문자열로 반환)
+    """
+    # \item[N] 다음의 값을 추출 (다음 \item이나 \end{itemize} 전까지)
+    pattern = rf"\\item\[{choice_num}\]\s*(.+?)(?=\\item\[|\\end\{{itemize\}}|$)"
+    match = re.search(pattern, problem_text, re.DOTALL)
+    if match:
+        value = match.group(1).strip()
+        # 줄바꿈 제거
+        value = re.sub(r'\s+', ' ', value)
+        return value
+    return str(choice_num)
+
+
 def remove_choices(problem_text: str) -> str:
     """
     객관식 문제에서 선택지를 제거하여 주관식으로 변환합니다.
@@ -300,11 +324,18 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
     solution = resp.choices[0].message.content
     answer = item.get('answer', None)
     
+    # 주관식 버전이면서 원본이 객관식인 경우, 실제 답 값을 추출
+    # (예: answer=2, 2번 선택지가 "\frac{1}{2}"이면 → real_answer="\frac{1}{2}")
+    if as_subjective and is_multiple_choice(item['problem']) and answer is not None:
+        real_answer = extract_choice_value(item['problem'], answer)
+    else:
+        real_answer = answer
+    
     # 형식에 맞게 변환 (생성된 프롬프트도 전달)
     formatted = format_output(
         problem=item['problem'],
         solution=solution,
-        answer=answer,
+        answer=real_answer,  # 주관식은 실제 답 값, 객관식은 선택지 번호
         source=source,
         generation_id=gen_idx,
         format_type=format_type,

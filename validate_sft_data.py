@@ -55,9 +55,67 @@ def extract_boxed_answer(text: str) -> Optional[str]:
     return None
 
 
+def normalize_latex(text: str) -> str:
+    """
+    LaTeX 표현을 정규화합니다.
+    - \\frac{a}{b} → a/b
+    - \\sqrt{x} → sqrt(x)
+    - 기타 LaTeX 명령어 단순화
+    """
+    if not text:
+        return ""
+    
+    result = text
+    
+    # \frac{a}{b} → a/b
+    # 중첩되지 않은 간단한 분수 처리
+    frac_pattern = r"\\frac\{([^{}]+)\}\{([^{}]+)\}"
+    while re.search(frac_pattern, result):
+        result = re.sub(frac_pattern, r"(\1)/(\2)", result)
+    
+    # \sqrt{x} → sqrt(x)
+    result = re.sub(r"\\sqrt\{([^{}]+)\}", r"sqrt(\1)", result)
+    
+    # \sqrt[n]{x} → x^(1/n)
+    result = re.sub(r"\\sqrt\[([^\]]+)\]\{([^{}]+)\}", r"(\2)^(1/\1)", result)
+    
+    # \cdot, \times → *
+    result = re.sub(r"\\cdot|\\times", "*", result)
+    
+    # \div → /
+    result = re.sub(r"\\div", "/", result)
+    
+    # \pm → +-
+    result = re.sub(r"\\pm", "+-", result)
+    
+    # \pi → pi
+    result = re.sub(r"\\pi", "pi", result)
+    
+    # \log, \ln, \sin, \cos, \tan 등 함수 이름에서 \ 제거
+    result = re.sub(r"\\(log|ln|sin|cos|tan|exp)", r"\1", result)
+    
+    # \left, \right 제거
+    result = re.sub(r"\\left|\\right", "", result)
+    
+    # \{ \} → ( )
+    result = re.sub(r"\\{|\\}", "", result)
+    
+    # $ 제거 (수식 구분자)
+    result = result.replace("$", "")
+    
+    # 백슬래시 제거 (남은 LaTeX 명령어)
+    result = re.sub(r"\\[a-zA-Z]+", "", result)
+    
+    # 공백 정리
+    result = re.sub(r"\s+", "", result)
+    
+    return result.lower()
+
+
 def normalize_answer(answer: str) -> str:
     """
     답을 정규화합니다 (비교를 위해).
+    - LaTeX 표현 정규화 (\\frac{1}{2} → (1)/(2))
     - 공백 제거
     - 숫자만 추출 (가능한 경우)
     """
@@ -66,15 +124,32 @@ def normalize_answer(answer: str) -> str:
     
     answer = str(answer).strip()
     
+    # LaTeX 정규화 먼저 적용
+    normalized = normalize_latex(answer)
+    
     # 숫자만 있는 경우 정수로 변환
     try:
         # 정수 변환 시도
-        return str(int(float(answer)))
+        return str(int(float(normalized)))
     except ValueError:
         pass
     
-    # 그 외에는 문자열 그대로 반환 (소문자, 공백 제거)
-    return answer.replace(" ", "").lower()
+    # 분수 형태인지 확인하고 계산 시도 (예: (1)/(2) → 0.5)
+    # 간단한 정수 분수만 처리
+    frac_match = re.match(r"^\(?(\d+)\)?/\(?(\d+)\)?$", normalized)
+    if frac_match:
+        num, den = int(frac_match.group(1)), int(frac_match.group(2))
+        if den != 0:
+            # 정수로 나누어 떨어지면 정수로
+            if num % den == 0:
+                return str(num // den)
+            # 아니면 분수 형태 유지 (최대공약수로 약분)
+            from math import gcd
+            g = gcd(num, den)
+            return f"{num//g}/{den//g}"
+    
+    # 그 외에는 정규화된 문자열 반환
+    return normalized
 
 
 def check_answer(extracted: Optional[str], ground_truth: Any) -> bool:
