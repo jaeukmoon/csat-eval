@@ -153,6 +153,8 @@ def main():
                         help="OpenAI 모델 이름")
     parser.add_argument("--file", default="2025_math.jsonl", type=str,
                         help="테스트할 파일 이름")
+    parser.add_argument("--max_problems", default=5, type=int,
+                        help="테스트할 최대 문제 수 (0이면 전체)")
     
     args = parser.parse_args()
     
@@ -174,6 +176,11 @@ def main():
     
     problems = open_jsonl(math_file)
     print(f"\nLoaded {len(problems)} problems from {args.file}")
+    
+    # 문제 수 제한
+    if args.max_problems > 0:
+        problems = problems[:args.max_problems]
+        print(f"  - 테스트할 문제 수: {len(problems)}개 (제한됨)")
     
     # 통계 출력
     mc_count = sum(1 for p in problems if is_multiple_choice(p['problem']))

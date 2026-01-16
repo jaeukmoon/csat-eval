@@ -1,11 +1,11 @@
 #!/bin/bash
-# SFT 데이터 생성 및 검증 파이프라인
-# 수학 문제 풀이 생성 -> 정답 검증 -> 필터링된 데이터 저장
+# SFT 데이터 생성 및 실시간 검증 파이프라인
+# tmux를 사용하여 생성과 검증을 병렬로 실행합니다.
 
 set -e  # 오류 발생 시 중단
 
 # ============================================================================
-# 설정 (필요에 따라 수정하세요)
+# 설정 (여기서 한 번만 수정하면 됩니다)
 # ============================================================================
 
 # 데이터 디렉토리
@@ -33,6 +33,12 @@ INPUT_FILE=""
 # 병합만 수행 (true/false)
 MERGE_ONLY=false
 
+# tmux 세션 이름
+TMUX_SESSION="sft_pipeline"
+
+# 검증된 데이터 저장 디렉토리
+VALIDATED_DIR="$OUTPUT_DIR/validated"
+
 # ============================================================================
 # 도움말
 # ============================================================================
@@ -40,70 +46,37 @@ MERGE_ONLY=false
 show_help() {
     echo "사용법: $0 [옵션]"
     echo ""
+    echo "tmux를 사용하여 데이터 생성과 검증을 병렬로 실행합니다."
+    echo "스크립트 상단의 설정값을 수정한 후 실행하세요."
+    echo ""
     echo "옵션:"
-    echo "  --data_dir DIR       데이터 디렉토리 (기본: ./data)"
-    echo "  --output_dir DIR     출력 디렉토리 (기본: ./sft_output)"
-    echo "  --n NUM              문제당 생성 횟수 (기본: 10)"
-    echo "  --worker NUM         동시 워커 수 (기본: 20)"
-    echo "  --format FORMAT      출력 형식: simple, sharegpt, alpaca (기본: sharegpt)"
-    echo "  --base_url URL       vLLM 서버 URL"
-    echo "  --model NAME         모델 이름"
-    echo "  --input_file FILE    특정 파일만 처리"
-    echo "  --merge_only         기존 결과 병합만 수행"
+    echo "  --no-tmux            tmux 없이 순차 실행 (기존 방식)"
     echo "  --generate_only      생성만 수행 (검증 스킵)"
     echo "  --validate_only      검증만 수행 (생성 스킵)"
+    echo "  --merge_only         기존 결과 병합만 수행"
     echo "  -h, --help           도움말 출력"
     echo ""
     echo "예시:"
-    echo "  $0                                    # 기본 설정으로 전체 파이프라인 실행"
-    echo "  $0 --n 5 --worker 10                  # 생성 횟수와 워커 수 조정"
-    echo "  $0 --input_file ./data/2025_math.jsonl  # 특정 파일만 처리"
-    echo "  $0 --validate_only                    # 검증만 수행"
+    echo "  $0                   # tmux 병렬 실행 (권장)"
+    echo "  $0 --no-tmux         # 순차 실행"
+    echo ""
+    echo "tmux 세션 관리:"
+    echo "  tmux attach -t $TMUX_SESSION   # 세션 접속"
+    echo "  tmux kill-session -t $TMUX_SESSION  # 세션 종료"
 }
 
 # ============================================================================
 # 인자 파싱
 # ============================================================================
 
+USE_TMUX=true
 GENERATE_ONLY=false
 VALIDATE_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --data_dir)
-            DATA_DIR="$2"
-            shift 2
-            ;;
-        --output_dir)
-            OUTPUT_DIR="$2"
-            shift 2
-            ;;
-        --n)
-            N="$2"
-            shift 2
-            ;;
-        --worker)
-            WORKER="$2"
-            shift 2
-            ;;
-        --format)
-            FORMAT="$2"
-            shift 2
-            ;;
-        --base_url)
-            BASE_URL="$2"
-            shift 2
-            ;;
-        --model)
-            MODEL="$2"
-            shift 2
-            ;;
-        --input_file)
-            INPUT_FILE="$2"
-            shift 2
-            ;;
-        --merge_only)
-            MERGE_ONLY=true
+        --no-tmux)
+            USE_TMUX=false
             shift
             ;;
         --generate_only)
@@ -112,6 +85,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --validate_only)
             VALIDATE_ONLY=true
+            shift
+            ;;
+        --merge_only)
+            MERGE_ONLY=true
             shift
             ;;
         -h|--help)
@@ -135,11 +112,13 @@ echo "SFT 데이터 파이프라인"
 echo "========================================"
 echo "데이터 디렉토리: $DATA_DIR"
 echo "출력 디렉토리: $OUTPUT_DIR"
+echo "검증 출력: $VALIDATED_DIR"
 echo "생성 횟수 (n): $N"
 echo "워커 수: $WORKER"
 echo "출력 형식: $FORMAT"
 echo "vLLM 서버: $BASE_URL"
 echo "모델: $MODEL"
+echo "tmux 사용: $USE_TMUX"
 if [ -n "$INPUT_FILE" ]; then
     echo "입력 파일: $INPUT_FILE"
 fi
@@ -147,86 +126,159 @@ echo "========================================"
 echo ""
 
 # ============================================================================
-# 1단계: SFT 데이터 생성
+# 디렉토리 준비
 # ============================================================================
 
-if [ "$VALIDATE_ONLY" = false ]; then
-    echo ""
-    echo "========================================"
-    echo "1단계: SFT 데이터 생성"
-    echo "========================================"
-    
-    GENERATE_CMD="python generate_sft_data.py \
-        --data_dir $DATA_DIR \
-        --output_dir $OUTPUT_DIR \
-        --n $N \
-        --worker $WORKER \
-        --format $FORMAT \
-        --base_url $BASE_URL \
-        --model $MODEL"
-    
-    if [ -n "$INPUT_FILE" ]; then
-        GENERATE_CMD="$GENERATE_CMD --input_file $INPUT_FILE"
-    fi
-    
-    if [ "$MERGE_ONLY" = true ]; then
-        GENERATE_CMD="$GENERATE_CMD --merge_only"
-    fi
-    
-    echo "실행: $GENERATE_CMD"
-    echo ""
-    
-    eval $GENERATE_CMD
-    
-    echo ""
-    echo "1단계 완료!"
+mkdir -p "$OUTPUT_DIR"
+mkdir -p "$VALIDATED_DIR"
+
+# 종료 신호 파일 경로
+STOP_FILE="$OUTPUT_DIR/.watcher_stop"
+rm -f "$STOP_FILE"  # 기존 종료 파일 삭제
+
+# ============================================================================
+# 명령어 생성
+# ============================================================================
+
+# 생성 명령어
+GENERATE_CMD="python generate_sft_data.py \
+    --data_dir $DATA_DIR \
+    --output_dir $OUTPUT_DIR \
+    --n $N \
+    --worker $WORKER \
+    --format $FORMAT \
+    --base_url $BASE_URL \
+    --model $MODEL"
+
+if [ -n "$INPUT_FILE" ]; then
+    GENERATE_CMD="$GENERATE_CMD --input_file $INPUT_FILE"
 fi
 
+if [ "$MERGE_ONLY" = true ]; then
+    GENERATE_CMD="$GENERATE_CMD --merge_only"
+fi
+
+# 모니터링할 디렉토리 목록 (subjectives, multiples 폴더들)
+WATCH_DIRS="$OUTPUT_DIR"
+
+# Watcher 명령어
+WATCHER_CMD="python validate_watcher.py \
+    --watch_dirs $WATCH_DIRS \
+    --output_dir $VALIDATED_DIR \
+    --interval 2.0 \
+    --stop_file $STOP_FILE"
+
 # ============================================================================
-# 2단계: 정답 검증 및 필터링
+# 실행
 # ============================================================================
 
-if [ "$GENERATE_ONLY" = false ]; then
+if [ "$USE_TMUX" = true ]; then
+    # tmux 병렬 실행 모드
+    echo "tmux 병렬 실행 모드"
     echo ""
-    echo "========================================"
-    echo "2단계: 정답 검증 및 필터링"
-    echo "========================================"
     
-    # 병합된 파일 경로
-    MERGED_FILE="$OUTPUT_DIR/merged/sft_math_all_${FORMAT}.jsonl"
-    VALIDATED_DIR="$OUTPUT_DIR/validated"
-    VALIDATED_FILE="$VALIDATED_DIR/sft_math_validated_${FORMAT}.jsonl"
+    # 기존 세션 확인 및 종료
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        echo "기존 세션 종료: $TMUX_SESSION"
+        tmux kill-session -t "$TMUX_SESSION"
+    fi
     
-    if [ -f "$MERGED_FILE" ]; then
-        echo "검증 대상: $MERGED_FILE"
-        
-        VALIDATE_CMD="python validate_sft_data.py \
-            --input $MERGED_FILE \
-            --output $VALIDATED_FILE"
-        
-        echo "실행: $VALIDATE_CMD"
-        echo ""
-        
-        eval $VALIDATE_CMD
-        
-        echo ""
-        echo "2단계 완료!"
+    if [ "$VALIDATE_ONLY" = true ]; then
+        # 검증만 수행
+        echo "검증만 수행 모드"
+        echo "실행: $WATCHER_CMD"
+        eval $WATCHER_CMD
     else
-        echo "경고: 병합된 파일을 찾을 수 없음: $MERGED_FILE"
-        echo "생성 단계를 먼저 실행하세요."
+        # tmux 세션 생성 및 병렬 실행
+        echo "tmux 세션 생성: $TMUX_SESSION"
+        echo ""
+        
+        # 세션 생성 (첫 번째 pane: watcher)
+        tmux new-session -d -s "$TMUX_SESSION" -n "pipeline"
+        
+        # 첫 번째 pane: Watcher 실행
+        tmux send-keys -t "$TMUX_SESSION:0" "echo '=== Watcher (실시간 검증) ===' && $WATCHER_CMD" C-m
+        
+        # 화면 분할 (두 번째 pane: generator)
+        tmux split-window -h -t "$TMUX_SESSION:0"
+        
+        # 두 번째 pane: Generator 실행 (완료 후 종료 신호 생성)
+        GENERATE_WITH_SIGNAL="echo '=== Generator (데이터 생성) ===' && $GENERATE_CMD && echo '생성 완료. Watcher 종료 중...' && sleep 5 && touch $STOP_FILE"
+        tmux send-keys -t "$TMUX_SESSION:0.1" "$GENERATE_WITH_SIGNAL" C-m
+        
+        echo "========================================"
+        echo "파이프라인이 백그라운드에서 실행 중입니다."
+        echo "========================================"
+        echo ""
+        echo "세션 접속: tmux attach -t $TMUX_SESSION"
+        echo "세션 종료: tmux kill-session -t $TMUX_SESSION"
+        echo ""
+        echo "왼쪽 pane: 실시간 검증 (Watcher)"
+        echo "오른쪽 pane: 데이터 생성 (Generator)"
+        echo ""
+        echo "출력 파일:"
+        echo "  - 생성된 원본: $OUTPUT_DIR/"
+        echo "  - 검증된 정답: $VALIDATED_DIR/"
+        echo ""
+        
+        # 자동으로 세션에 attach
+        echo "세션에 접속합니다... (Ctrl+B, D로 detach)"
+        sleep 1
+        tmux attach -t "$TMUX_SESSION"
     fi
+else
+    # 순차 실행 모드 (기존 방식)
+    echo "순차 실행 모드"
+    echo ""
+    
+    if [ "$VALIDATE_ONLY" = false ]; then
+        echo "========================================"
+        echo "1단계: SFT 데이터 생성"
+        echo "========================================"
+        echo "실행: $GENERATE_CMD"
+        echo ""
+        eval $GENERATE_CMD
+        echo ""
+        echo "1단계 완료!"
+    fi
+    
+    if [ "$GENERATE_ONLY" = false ]; then
+        echo ""
+        echo "========================================"
+        echo "2단계: 정답 검증 및 필터링"
+        echo "========================================"
+        
+        # 병합된 파일 경로
+        MERGED_FILE="$OUTPUT_DIR/merged/sft_math_all_${FORMAT}.jsonl"
+        VALIDATED_FILE="$VALIDATED_DIR/sft_math_validated_${FORMAT}.jsonl"
+        
+        if [ -f "$MERGED_FILE" ]; then
+            echo "검증 대상: $MERGED_FILE"
+            
+            VALIDATE_CMD="python validate_sft_data.py \
+                --input $MERGED_FILE \
+                --output $VALIDATED_FILE"
+            
+            echo "실행: $VALIDATE_CMD"
+            echo ""
+            
+            eval $VALIDATE_CMD
+            
+            echo ""
+            echo "2단계 완료!"
+        else
+            echo "경고: 병합된 파일을 찾을 수 없음: $MERGED_FILE"
+            echo "생성 단계를 먼저 실행하세요."
+        fi
+    fi
+    
+    echo ""
+    echo "========================================"
+    echo "파이프라인 완료!"
+    echo "========================================"
+    echo ""
+    echo "출력 파일:"
+    echo "  - 생성된 데이터: $OUTPUT_DIR/merged/sft_math_all_${FORMAT}.jsonl"
+    echo "  - 검증된 데이터: $VALIDATED_DIR/sft_math_validated_${FORMAT}.jsonl"
+    echo ""
 fi
-
-# ============================================================================
-# 완료
-# ============================================================================
-
-echo ""
-echo "========================================"
-echo "파이프라인 완료!"
-echo "========================================"
-echo ""
-echo "출력 파일:"
-echo "  - 생성된 데이터: $OUTPUT_DIR/merged/sft_math_all_${FORMAT}.jsonl"
-echo "  - 검증된 데이터: $OUTPUT_DIR/validated/sft_math_validated_${FORMAT}.jsonl"
-echo ""
