@@ -159,10 +159,12 @@ mkdir -p "$OUTPUT_DIR"
 # 종료 신호 파일 경로
 STOP_FILE="$OUTPUT_DIR/.watcher_stop"
 RETRY_QUEUE="$OUTPUT_DIR/.retry_queue.jsonl"
+STATUS_FILE="$OUTPUT_DIR/.status.json"
 
 # 기존 파일 삭제
 rm -f "$STOP_FILE"
 rm -f "$RETRY_QUEUE"
+rm -f "$STATUS_FILE"
 
 # ============================================================================
 # 명령어 생성 함수
@@ -202,7 +204,9 @@ build_watcher_cmd() {
         --interval 2.0 \
         --stop_file $STOP_FILE \
         --retry_queue $RETRY_QUEUE \
-        --expected_n $N"
+        --expected_n $N \
+        --dashboard_interval 10 \
+        --status_file $STATUS_FILE"
 }
 
 # ============================================================================
@@ -413,9 +417,11 @@ OUTPUT_DIR="$1"
 N="$2"
 STOP_FILE="$3"
 RETRY_QUEUE="$4"
+STATUS_FILE="$5"
 
 echo "=== Watcher (실시간 검증) ==="
 echo "재생성 루프 지원 모드"
+echo "상태 파일: $STATUS_FILE"
 echo ""
 
 while true; do
@@ -425,7 +431,9 @@ while true; do
         --interval 2.0 \
         --stop_file "$STOP_FILE" \
         --retry_queue "$RETRY_QUEUE" \
-        --expected_n "$N"
+        --expected_n "$N" \
+        --dashboard_interval 10 \
+        --status_file "$STATUS_FILE"
     
     # 재생성 큐가 있고 종료 파일이 있으면 재시작 대기
     if [ -f "$RETRY_QUEUE" ]; then
@@ -448,7 +456,7 @@ WATCHER_SCRIPT_EOF
     tmux new-session -d -s "$TMUX_SESSION" -n "pipeline"
     
     # 왼쪽 pane: Watcher
-    tmux send-keys -t "$TMUX_SESSION:0" "$WATCHER_SCRIPT '$OUTPUT_DIR' '$N' '$STOP_FILE' '$RETRY_QUEUE'" C-m
+    tmux send-keys -t "$TMUX_SESSION:0" "$WATCHER_SCRIPT '$OUTPUT_DIR' '$N' '$STOP_FILE' '$RETRY_QUEUE' '$STATUS_FILE'" C-m
     
     # 오른쪽 pane: Generator (재생성 루프)
     tmux split-window -h -t "$TMUX_SESSION:0"
@@ -469,6 +477,9 @@ WATCHER_SCRIPT_EOF
     echo "저장 구조:"
     echo "  - 생성된 원본: $OUTPUT_DIR/과목/subjectives/, multiples/"
     echo "  - 검증된 정답: $OUTPUT_DIR/과목/subjectives_validated/, multiples_validated/"
+    echo ""
+    echo "실시간 상태 확인:"
+    echo "  cat $STATUS_FILE | python -m json.tool"
     echo ""
     
     echo "세션에 접속합니다... (Ctrl+B, D로 detach)"
