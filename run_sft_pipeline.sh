@@ -1,6 +1,7 @@
 #!/bin/bash
 # SFT 데이터 생성 및 실시간 검증 파이프라인
 # tmux를 사용하여 생성과 검증을 병렬로 실행합니다.
+# 정답이 없는 문제는 자동으로 재생성합니다 (최대 3회).
 #
 # 저장 구조:
 #   sft_output/
@@ -47,6 +48,9 @@ MERGE_ONLY=false
 # tmux 세션 이름
 TMUX_SESSION="sft_pipeline"
 
+# 재생성 최대 횟수
+MAX_RETRY=3
+
 # ============================================================================
 # 도움말
 # ============================================================================
@@ -68,11 +72,13 @@ show_help() {
     echo "  --generate_only      생성만 수행 (검증 스킵)"
     echo "  --validate_only      검증만 수행 (생성 스킵)"
     echo "  --merge_only         기존 결과 병합만 수행"
+    echo "  --no-retry           재생성 비활성화"
     echo "  -h, --help           도움말 출력"
     echo ""
     echo "예시:"
-    echo "  $0                   # tmux 병렬 실행 (권장)"
+    echo "  $0                   # tmux 병렬 실행 + 자동 재생성 (권장)"
     echo "  $0 --no-tmux         # 순차 실행"
+    echo "  $0 --no-retry        # 재생성 비활성화"
     echo ""
     echo "tmux 세션 관리:"
     echo "  tmux attach -t $TMUX_SESSION   # 세션 접속"
@@ -86,6 +92,7 @@ show_help() {
 USE_TMUX=true
 GENERATE_ONLY=false
 VALIDATE_ONLY=false
+ENABLE_RETRY=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -103,6 +110,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --merge_only)
             MERGE_ONLY=true
+            shift
+            ;;
+        --no-retry)
+            ENABLE_RETRY=false
             shift
             ;;
         -h|--help)
@@ -132,6 +143,7 @@ echo "출력 형식: $FORMAT"
 echo "vLLM 서버: $BASE_URL"
 echo "모델: $MODEL"
 echo "tmux 사용: $USE_TMUX"
+echo "자동 재생성: $ENABLE_RETRY (최대 ${MAX_RETRY}회)"
 if [ -n "$INPUT_FILE" ]; then
     echo "입력 파일: $INPUT_FILE"
 fi
@@ -146,141 +158,131 @@ mkdir -p "$OUTPUT_DIR"
 
 # 종료 신호 파일 경로
 STOP_FILE="$OUTPUT_DIR/.watcher_stop"
-rm -f "$STOP_FILE"  # 기존 종료 파일 삭제
+RETRY_QUEUE="$OUTPUT_DIR/.retry_queue.jsonl"
+
+# 기존 파일 삭제
+rm -f "$STOP_FILE"
+rm -f "$RETRY_QUEUE"
 
 # ============================================================================
-# 명령어 생성
+# 명령어 생성 함수
 # ============================================================================
 
-# 생성 명령어
-GENERATE_CMD="python generate_sft_data.py \
-    --data_dir $DATA_DIR \
-    --output_dir $OUTPUT_DIR \
-    --n $N \
-    --worker $WORKER \
-    --format $FORMAT \
-    --base_url $BASE_URL \
-    --model $MODEL"
-
-if [ -n "$INPUT_FILE" ]; then
-    GENERATE_CMD="$GENERATE_CMD --input_file $INPUT_FILE"
-fi
-
-if [ "$MERGE_ONLY" = true ]; then
-    GENERATE_CMD="$GENERATE_CMD --merge_only"
-fi
-
-# Watcher 명령어 (OUTPUT_DIR 전체를 모니터링, _validated 폴더는 자동 제외됨)
-WATCHER_CMD="python validate_watcher.py \
-    --watch_dirs $OUTPUT_DIR \
-    --output_dir $OUTPUT_DIR \
-    --interval 2.0 \
-    --stop_file $STOP_FILE"
-
-# ============================================================================
-# 실행
-# ============================================================================
-
-if [ "$USE_TMUX" = true ]; then
-    # tmux 병렬 실행 모드
-    echo "tmux 병렬 실행 모드"
-    echo ""
+build_generate_cmd() {
+    local RETRY_FILE="$1"
     
-    # 기존 세션 확인 및 종료
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        echo "기존 세션 종료: $TMUX_SESSION"
-        tmux kill-session -t "$TMUX_SESSION"
+    local CMD="python generate_sft_data.py \
+        --data_dir $DATA_DIR \
+        --output_dir $OUTPUT_DIR \
+        --n $N \
+        --worker $WORKER \
+        --format $FORMAT \
+        --base_url $BASE_URL \
+        --model $MODEL"
+    
+    if [ -n "$INPUT_FILE" ]; then
+        CMD="$CMD --input_file $INPUT_FILE"
     fi
     
-    if [ "$VALIDATE_ONLY" = true ]; then
-        # 검증만 수행
-        echo "검증만 수행 모드"
-        echo "실행: $WATCHER_CMD"
-        eval $WATCHER_CMD
-    else
-        # tmux 세션 생성 및 병렬 실행
-        echo "tmux 세션 생성: $TMUX_SESSION"
-        echo ""
-        
-        # 세션 생성 (첫 번째 pane: watcher)
-        tmux new-session -d -s "$TMUX_SESSION" -n "pipeline"
-        
-        # 첫 번째 pane: Watcher 실행
-        tmux send-keys -t "$TMUX_SESSION:0" "echo '=== Watcher (실시간 검증) ===' && $WATCHER_CMD" C-m
-        
-        # 화면 분할 (두 번째 pane: generator)
-        tmux split-window -h -t "$TMUX_SESSION:0"
-        
-        # 두 번째 pane: Generator 실행 (완료 후 종료 신호 생성)
-        GENERATE_WITH_SIGNAL="echo '=== Generator (데이터 생성) ===' && $GENERATE_CMD && echo '생성 완료. Watcher 종료 중...' && sleep 5 && touch $STOP_FILE"
-        tmux send-keys -t "$TMUX_SESSION:0.1" "$GENERATE_WITH_SIGNAL" C-m
-        
-        echo "========================================"
-        echo "파이프라인이 백그라운드에서 실행 중입니다."
-        echo "========================================"
-        echo ""
-        echo "세션 접속: tmux attach -t $TMUX_SESSION"
-        echo "세션 종료: tmux kill-session -t $TMUX_SESSION"
-        echo ""
-        echo "왼쪽 pane: 실시간 검증 (Watcher)"
-        echo "오른쪽 pane: 데이터 생성 (Generator)"
-        echo ""
-        echo "저장 구조:"
-        echo "  - 생성된 원본: $OUTPUT_DIR/과목/subjectives/, multiples/"
-        echo "  - 검증된 정답: $OUTPUT_DIR/과목/subjectives_validated/, multiples_validated/"
-        echo ""
-        
-        # 자동으로 세션에 attach
-        echo "세션에 접속합니다... (Ctrl+B, D로 detach)"
-        sleep 1
-        tmux attach -t "$TMUX_SESSION"
-    fi
-else
-    # 순차 실행 모드 (기존 방식)
-    echo "순차 실행 모드"
-    echo ""
-    
-    if [ "$VALIDATE_ONLY" = false ]; then
-        echo "========================================"
-        echo "1단계: SFT 데이터 생성"
-        echo "========================================"
-        echo "실행: $GENERATE_CMD"
-        echo ""
-        eval $GENERATE_CMD
-        echo ""
-        echo "1단계 완료!"
+    if [ "$MERGE_ONLY" = true ]; then
+        CMD="$CMD --merge_only"
     fi
     
-    if [ "$GENERATE_ONLY" = false ]; then
-        echo ""
-        echo "========================================"
-        echo "2단계: 정답 검증 및 필터링"
-        echo "========================================"
+    if [ -n "$RETRY_FILE" ] && [ -f "$RETRY_FILE" ]; then
+        CMD="$CMD --retry_file $RETRY_FILE"
+    fi
+    
+    echo "$CMD"
+}
+
+build_watcher_cmd() {
+    echo "python validate_watcher.py \
+        --watch_dirs $OUTPUT_DIR \
+        --output_dir $OUTPUT_DIR \
+        --interval 2.0 \
+        --stop_file $STOP_FILE \
+        --retry_queue $RETRY_QUEUE \
+        --expected_n $N"
+}
+
+# ============================================================================
+# 순차 실행 모드 (재생성 루프 포함)
+# ============================================================================
+
+run_sequential() {
+    local RETRY_COUNT=0
+    local RETRY_FILE=""
+    
+    while true; do
+        # 종료 파일 삭제
+        rm -f "$STOP_FILE"
         
-        # 병합된 파일 경로
-        MERGED_FILE="$OUTPUT_DIR/merged/sft_math_all_${FORMAT}.jsonl"
-        VALIDATED_FILE="$OUTPUT_DIR/merged/sft_math_validated_${FORMAT}.jsonl"
-        
-        if [ -f "$MERGED_FILE" ]; then
-            echo "검증 대상: $MERGED_FILE"
-            
-            VALIDATE_CMD="python validate_sft_data.py \
-                --input $MERGED_FILE \
-                --output $VALIDATED_FILE"
-            
-            echo "실행: $VALIDATE_CMD"
+        if [ "$VALIDATE_ONLY" = false ]; then
             echo ""
+            echo "========================================"
+            if [ $RETRY_COUNT -eq 0 ]; then
+                echo "1단계: SFT 데이터 생성"
+            else
+                echo "재생성 시도 ${RETRY_COUNT}/${MAX_RETRY}"
+            fi
+            echo "========================================"
             
-            eval $VALIDATE_CMD
-            
+            GENERATE_CMD=$(build_generate_cmd "$RETRY_FILE")
+            echo "실행: $GENERATE_CMD"
             echo ""
-            echo "2단계 완료!"
-        else
-            echo "경고: 병합된 파일을 찾을 수 없음: $MERGED_FILE"
-            echo "Watcher로 실시간 검증 수행..."
-            eval $WATCHER_CMD
+            eval $GENERATE_CMD
+            echo ""
+            echo "생성 완료!"
         fi
-    fi
+        
+        if [ "$GENERATE_ONLY" = false ]; then
+            echo ""
+            echo "========================================"
+            echo "2단계: 정답 검증 및 필터링"
+            echo "========================================"
+            
+            # Watcher로 검증 (재생성 큐 생성)
+            WATCHER_CMD=$(build_watcher_cmd)
+            echo "실행: $WATCHER_CMD"
+            echo ""
+            
+            # Watcher 실행 (즉시 종료 - 기존 파일 처리 후 종료)
+            touch "$STOP_FILE"  # 즉시 종료 신호
+            eval $WATCHER_CMD
+            
+            echo ""
+            echo "검증 완료!"
+        fi
+        
+        # 재생성 필요 여부 확인
+        if [ "$ENABLE_RETRY" = false ]; then
+            echo "재생성 비활성화됨"
+            break
+        fi
+        
+        if [ ! -f "$RETRY_QUEUE" ]; then
+            echo "모든 문제에 정답 있음. 완료!"
+            break
+        fi
+        
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        
+        if [ $RETRY_COUNT -gt $MAX_RETRY ]; then
+            echo ""
+            echo "⚠️  최대 재생성 횟수(${MAX_RETRY})에 도달했습니다."
+            echo "남은 재생성 필요 문제: $RETRY_QUEUE"
+            break
+        fi
+        
+        echo ""
+        echo "========================================"
+        echo "⚠️  재생성 필요 문제 발견!"
+        echo "========================================"
+        cat "$RETRY_QUEUE"
+        echo ""
+        
+        RETRY_FILE="$RETRY_QUEUE"
+    done
     
     echo ""
     echo "========================================"
@@ -292,4 +294,194 @@ else
     echo "  - 검증된 정답: $OUTPUT_DIR/과목/subjectives_validated/, multiples_validated/"
     echo "  - 병합된 파일: $OUTPUT_DIR/merged/"
     echo ""
+}
+
+# ============================================================================
+# tmux 병렬 실행 모드 (재생성 루프 포함)
+# ============================================================================
+
+run_with_tmux() {
+    # 기존 세션 확인 및 종료
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        echo "기존 세션 종료: $TMUX_SESSION"
+        tmux kill-session -t "$TMUX_SESSION"
+    fi
+    
+    if [ "$VALIDATE_ONLY" = true ]; then
+        echo "검증만 수행 모드"
+        WATCHER_CMD=$(build_watcher_cmd)
+        echo "실행: $WATCHER_CMD"
+        eval $WATCHER_CMD
+        return
+    fi
+    
+    # 재생성 스크립트 생성 (tmux에서 실행)
+    RETRY_SCRIPT="$OUTPUT_DIR/.retry_loop.sh"
+    cat > "$RETRY_SCRIPT" << 'RETRY_SCRIPT_EOF'
+#!/bin/bash
+OUTPUT_DIR="$1"
+DATA_DIR="$2"
+N="$3"
+WORKER="$4"
+FORMAT="$5"
+BASE_URL="$6"
+MODEL="$7"
+INPUT_FILE="$8"
+MAX_RETRY="$9"
+STOP_FILE="${10}"
+RETRY_QUEUE="${11}"
+
+RETRY_COUNT=0
+RETRY_FILE=""
+
+while true; do
+    rm -f "$STOP_FILE"
+    
+    echo ""
+    echo "========================================"
+    if [ $RETRY_COUNT -eq 0 ]; then
+        echo "=== Generator (데이터 생성) ==="
+    else
+        echo "=== 재생성 시도 ${RETRY_COUNT}/${MAX_RETRY} ==="
+    fi
+    echo "========================================"
+    
+    CMD="python generate_sft_data.py \
+        --data_dir $DATA_DIR \
+        --output_dir $OUTPUT_DIR \
+        --n $N \
+        --worker $WORKER \
+        --format $FORMAT \
+        --base_url $BASE_URL \
+        --model $MODEL"
+    
+    if [ -n "$INPUT_FILE" ]; then
+        CMD="$CMD --input_file $INPUT_FILE"
+    fi
+    
+    if [ -n "$RETRY_FILE" ] && [ -f "$RETRY_FILE" ]; then
+        CMD="$CMD --retry_file $RETRY_FILE"
+    fi
+    
+    echo "실행: $CMD"
+    eval $CMD
+    
+    echo ""
+    echo "생성 완료. Watcher 종료 대기 중..."
+    sleep 5
+    touch "$STOP_FILE"
+    
+    # Watcher 종료 대기
+    sleep 10
+    
+    # 재생성 필요 여부 확인
+    if [ ! -f "$RETRY_QUEUE" ]; then
+        echo "모든 문제에 정답 있음. 완료!"
+        break
+    fi
+    
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    
+    if [ $RETRY_COUNT -gt $MAX_RETRY ]; then
+        echo ""
+        echo "⚠️  최대 재생성 횟수(${MAX_RETRY})에 도달했습니다."
+        break
+    fi
+    
+    echo ""
+    echo "⚠️  재생성 필요 문제 발견! 재시작..."
+    cat "$RETRY_QUEUE"
+    
+    RETRY_FILE="$RETRY_QUEUE"
+    rm -f "$STOP_FILE"
+    
+    sleep 3
+done
+
+echo ""
+echo "========================================"
+echo "Generator 종료"
+echo "========================================"
+RETRY_SCRIPT_EOF
+    chmod +x "$RETRY_SCRIPT"
+    
+    # Watcher 재시작 스크립트
+    WATCHER_SCRIPT="$OUTPUT_DIR/.watcher_loop.sh"
+    cat > "$WATCHER_SCRIPT" << 'WATCHER_SCRIPT_EOF'
+#!/bin/bash
+OUTPUT_DIR="$1"
+N="$2"
+STOP_FILE="$3"
+RETRY_QUEUE="$4"
+
+echo "=== Watcher (실시간 검증) ==="
+echo "재생성 루프 지원 모드"
+echo ""
+
+while true; do
+    python validate_watcher.py \
+        --watch_dirs "$OUTPUT_DIR" \
+        --output_dir "$OUTPUT_DIR" \
+        --interval 2.0 \
+        --stop_file "$STOP_FILE" \
+        --retry_queue "$RETRY_QUEUE" \
+        --expected_n "$N"
+    
+    # 재생성 큐가 있고 종료 파일이 있으면 재시작 대기
+    if [ -f "$RETRY_QUEUE" ]; then
+        echo ""
+        echo "재생성 대기 중... (3초 후 재시작)"
+        rm -f "$STOP_FILE"
+        sleep 3
+    else
+        echo "완료!"
+        break
+    fi
+done
+WATCHER_SCRIPT_EOF
+    chmod +x "$WATCHER_SCRIPT"
+    
+    # tmux 세션 생성
+    echo "tmux 세션 생성: $TMUX_SESSION"
+    echo ""
+    
+    tmux new-session -d -s "$TMUX_SESSION" -n "pipeline"
+    
+    # 왼쪽 pane: Watcher
+    tmux send-keys -t "$TMUX_SESSION:0" "$WATCHER_SCRIPT '$OUTPUT_DIR' '$N' '$STOP_FILE' '$RETRY_QUEUE'" C-m
+    
+    # 오른쪽 pane: Generator (재생성 루프)
+    tmux split-window -h -t "$TMUX_SESSION:0"
+    tmux send-keys -t "$TMUX_SESSION:0.1" "$RETRY_SCRIPT '$OUTPUT_DIR' '$DATA_DIR' '$N' '$WORKER' '$FORMAT' '$BASE_URL' '$MODEL' '$INPUT_FILE' '$MAX_RETRY' '$STOP_FILE' '$RETRY_QUEUE'" C-m
+    
+    echo "========================================"
+    echo "파이프라인이 백그라운드에서 실행 중입니다."
+    echo "========================================"
+    echo ""
+    echo "세션 접속: tmux attach -t $TMUX_SESSION"
+    echo "세션 종료: tmux kill-session -t $TMUX_SESSION"
+    echo ""
+    echo "왼쪽 pane: 실시간 검증 (Watcher)"
+    echo "오른쪽 pane: 데이터 생성 (Generator) + 자동 재생성"
+    echo ""
+    echo "재생성: 정답이 없는 문제 발견 시 자동으로 최대 ${MAX_RETRY}회 재생성"
+    echo ""
+    echo "저장 구조:"
+    echo "  - 생성된 원본: $OUTPUT_DIR/과목/subjectives/, multiples/"
+    echo "  - 검증된 정답: $OUTPUT_DIR/과목/subjectives_validated/, multiples_validated/"
+    echo ""
+    
+    echo "세션에 접속합니다... (Ctrl+B, D로 detach)"
+    sleep 1
+    tmux attach -t "$TMUX_SESSION"
+}
+
+# ============================================================================
+# 실행
+# ============================================================================
+
+if [ "$USE_TMUX" = true ]; then
+    run_with_tmux
+else
+    run_sequential
 fi

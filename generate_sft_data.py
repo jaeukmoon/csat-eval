@@ -354,19 +354,29 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
 
 def run_generation(problems: list, request_sentences: list, output_dir: str,
                    base_url: str, model: str, source: str, format_type: str,
-                   n: int = 10, max_workers: int = 200, question_type: str = "multiples"):
+                   n: int = 10, max_workers: int = 200, question_type: str = "multiples",
+                   retry_problems: list = None):
     """
     모든 문제에 대해 n번씩 풀이를 생성합니다.
     
     Args:
         question_type: "multiples" (객관식) 또는 "subjectives" (주관식)
+        retry_problems: 재생성할 문제 인덱스 목록 (None이면 모든 문제 처리)
     """
     inputs = []
-    for i in range(len(problems)):
-        for j in range(n):
-            inputs.append((i, j))
     
-    print(f"Total tasks: {len(inputs)} ({len(problems)} problems x {n} generations) [{question_type}]")
+    if retry_problems is not None:
+        # 재생성 모드: 지정된 문제만 처리
+        for problem_idx in retry_problems:
+            for j in range(n):
+                inputs.append((problem_idx, j))
+        print(f"Retry mode: {len(inputs)} tasks ({len(retry_problems)} problems x {n} generations) [{question_type}]")
+    else:
+        # 일반 모드: 모든 문제 처리
+        for i in range(len(problems)):
+            for j in range(n):
+                inputs.append((i, j))
+        print(f"Total tasks: {len(inputs)} ({len(problems)} problems x {n} generations) [{question_type}]")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
@@ -448,6 +458,8 @@ def main():
                         help="생성 없이 기존 결과만 병합")
     parser.add_argument("--input_file", type=str, default=None,
                         help="특정 파일만 처리 (지정하지 않으면 모든 수학 파일 처리)")
+    parser.add_argument("--retry_file", type=str, default=None,
+                        help="재생성할 문제 목록 파일 (retry_queue.jsonl)")
     
     args = parser.parse_args()
     
@@ -467,6 +479,19 @@ def main():
         raise FileNotFoundError(f"No math JSONL files found in {args.data_dir}")
     
     print(f"Found {len(math_files)} math files: {[os.path.basename(f) for f in math_files]}")
+    
+    # 재생성 파일 로드
+    retry_queue = {}  # {(source, question_type): [problem_indices]}
+    if args.retry_file and os.path.exists(args.retry_file):
+        retry_items = open_jsonl(args.retry_file)
+        for item in retry_items:
+            key = (item["source"], item["question_type"])
+            if key not in retry_queue:
+                retry_queue[key] = []
+            retry_queue[key].append(item["problem_idx"])
+        print(f"\n재생성 모드: {len(retry_items)}개 문제 재생성 예정")
+        for (src, qtype), indices in retry_queue.items():
+            print(f"  - {src}/{qtype}: 문제 {indices}")
     
     result_dirs = []
     
@@ -488,46 +513,72 @@ def main():
             print(f"  - 객관식 문제: {mc_count}개, 주관식 문제: {len(problems) - mc_count}개")
             
             # 주관식 버전 생성 (subjectives)
-            # - 객관식 문제: 선택지 제거
-            # - 주관식 문제: 그대로
             subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
             os.makedirs(subj_output_dir, exist_ok=True)
             result_dirs.append(subj_output_dir)
             
-            print(f"\n[주관식 버전 생성 시작] (전체 {len(problems)}개 문제)")
-            run_generation(
-                problems=problems,
-                request_sentences=request_sentences,
-                output_dir=subj_output_dir,
-                base_url=args.base_url,
-                model=args.model,
-                source=source,
-                format_type=args.format,
-                n=args.n,
-                max_workers=args.worker,
-                question_type="subjectives"
-            )
+            # 재생성할 문제 목록 확인
+            subj_retry = retry_queue.get((source, "subjectives"), None)
+            
+            # 재생성 모드일 경우 기존 파일 삭제
+            if subj_retry:
+                print(f"\n[주관식 재생성] 문제 {subj_retry} 기존 파일 삭제 중...")
+                for problem_idx in subj_retry:
+                    for gen_idx in range(args.n):
+                        old_file = os.path.join(subj_output_dir, f"{problem_idx}_{gen_idx}.jsonl")
+                        if os.path.exists(old_file):
+                            os.remove(old_file)
+                            print(f"  삭제: {old_file}")
+            
+            if subj_retry or not retry_queue:
+                print(f"\n[주관식 버전 생성 시작] ({len(subj_retry) if subj_retry else len(problems)}개 문제)")
+                run_generation(
+                    problems=problems,
+                    request_sentences=request_sentences,
+                    output_dir=subj_output_dir,
+                    base_url=args.base_url,
+                    model=args.model,
+                    source=source,
+                    format_type=args.format,
+                    n=args.n,
+                    max_workers=args.worker,
+                    question_type="subjectives",
+                    retry_problems=subj_retry
+                )
             
             # 객관식 버전 생성 (multiples)
-            # - 객관식 문제: 선택지 유지
-            # - 주관식 문제: 그대로
             mc_output_dir = os.path.join(args.output_dir, source, "multiples")
             os.makedirs(mc_output_dir, exist_ok=True)
             result_dirs.append(mc_output_dir)
             
-            print(f"\n[객관식 버전 생성 시작] (전체 {len(problems)}개 문제)")
-            run_generation(
-                problems=problems,
-                request_sentences=request_sentences,
-                output_dir=mc_output_dir,
-                base_url=args.base_url,
-                model=args.model,
-                source=source,
-                format_type=args.format,
-                n=args.n,
-                max_workers=args.worker,
-                question_type="multiples"
-            )
+            # 재생성할 문제 목록 확인
+            mc_retry = retry_queue.get((source, "multiples"), None)
+            
+            # 재생성 모드일 경우 기존 파일 삭제
+            if mc_retry:
+                print(f"\n[객관식 재생성] 문제 {mc_retry} 기존 파일 삭제 중...")
+                for problem_idx in mc_retry:
+                    for gen_idx in range(args.n):
+                        old_file = os.path.join(mc_output_dir, f"{problem_idx}_{gen_idx}.jsonl")
+                        if os.path.exists(old_file):
+                            os.remove(old_file)
+                            print(f"  삭제: {old_file}")
+            
+            if mc_retry or not retry_queue:
+                print(f"\n[객관식 버전 생성 시작] ({len(mc_retry) if mc_retry else len(problems)}개 문제)")
+                run_generation(
+                    problems=problems,
+                    request_sentences=request_sentences,
+                    output_dir=mc_output_dir,
+                    base_url=args.base_url,
+                    model=args.model,
+                    source=source,
+                    format_type=args.format,
+                    n=args.n,
+                    max_workers=args.worker,
+                    question_type="multiples",
+                    retry_problems=mc_retry
+                )
     else:
         # merge_only 모드: 기존 디렉토리 찾기
         for file_path in math_files:

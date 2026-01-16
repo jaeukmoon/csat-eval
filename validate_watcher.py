@@ -5,15 +5,21 @@ SFT 데이터 실시간 검증 Watcher
 저장 구조:
   - 과목/subjectives/ → 과목/subjectives_validated/
   - 과목/multiples/   → 과목/multiples_validated/
+
+재생성 기능:
+  - 문제별 정답 개수 추적
+  - 정답이 0개인 문제는 retry_queue.jsonl에 기록
 """
 import os
+import re
 import sys
 import time
 import json
 import signal
 import argparse
 from pathlib import Path
-from typing import Set, Dict, Any, Optional
+from collections import defaultdict
+from typing import Set, Dict, Any, Optional, Tuple
 
 # validate_sft_data.py에서 함수들 import
 from validate_sft_data import (
@@ -29,21 +35,33 @@ class ValidateWatcher:
     """디렉토리를 모니터링하고 새 파일을 검증하는 Watcher"""
     
     def __init__(self, watch_dirs: list, base_output_dir: str, 
-                 poll_interval: float = 1.0, stop_file: str = None):
+                 poll_interval: float = 1.0, stop_file: str = None,
+                 retry_queue_file: str = None, expected_n: int = 10):
         """
         Args:
             watch_dirs: 모니터링할 디렉토리 목록 (예: [sft_output/2022_math/subjectives, ...])
             base_output_dir: 기본 출력 디렉토리 (예: sft_output)
             poll_interval: 파일 체크 간격 (초)
             stop_file: 이 파일이 생성되면 watcher 종료
+            retry_queue_file: 재생성 필요 문제 저장 파일 경로
+            expected_n: 문제당 예상 생성 횟수 (기본: 10)
         """
         self.watch_dirs = [os.path.abspath(d) for d in watch_dirs]
         self.base_output_dir = os.path.abspath(base_output_dir)
         self.poll_interval = poll_interval
         self.stop_file = stop_file
+        self.retry_queue_file = retry_queue_file
+        self.expected_n = expected_n
         
         # 처리된 파일 추적
         self.processed_files: Set[str] = set()
+        
+        # 문제별 정답 개수 추적
+        # 키: (source, question_type, problem_idx)
+        # 값: {"correct": int, "total": int}
+        self.problem_stats: Dict[Tuple[str, str, int], Dict[str, int]] = defaultdict(
+            lambda: {"correct": 0, "total": 0}
+        )
         
         # 통계
         self.stats = {
@@ -68,6 +86,41 @@ class ValidateWatcher:
     def _is_in_validated_dir(self, file_path: str) -> bool:
         """파일이 _validated 폴더에 있는지 확인 (재귀 방지)"""
         return "_validated" in file_path
+    
+    def _parse_file_path(self, file_path: str) -> Optional[Tuple[str, str, int, int]]:
+        """
+        파일 경로에서 source, question_type, problem_idx, gen_idx 추출
+        
+        예: sft_output/2022_math/subjectives/0_5.jsonl
+            → ("2022_math", "subjectives", 0, 5)
+        """
+        try:
+            path_parts = file_path.replace("\\", "/").split("/")
+            fname = os.path.basename(file_path)
+            
+            # 파일명에서 problem_idx와 gen_idx 추출
+            match = re.match(r"(\d+)_(\d+)\.jsonl$", fname)
+            if not match:
+                return None
+            problem_idx = int(match.group(1))
+            gen_idx = int(match.group(2))
+            
+            # question_type (subjectives 또는 multiples) 찾기
+            question_type = None
+            source = None
+            for i, part in enumerate(path_parts):
+                if part in ("subjectives", "multiples"):
+                    question_type = part
+                    # source는 question_type 바로 앞에 위치
+                    if i > 0:
+                        source = path_parts[i - 1]
+                    break
+            
+            if source and question_type:
+                return (source, question_type, problem_idx, gen_idx)
+            return None
+        except Exception:
+            return None
     
     def _get_existing_files(self) -> Set[str]:
         """현재 존재하는 모든 .jsonl 파일 목록 반환 (_validated 폴더 제외)"""
@@ -95,13 +148,8 @@ class ValidateWatcher:
         예:
           sft_output/2022_math/subjectives/0_0.jsonl
           → sft_output/2022_math/subjectives_validated/0_0.jsonl
-          
-          sft_output/2022_math/multiples/0_0.jsonl
-          → sft_output/2022_math/multiples_validated/0_0.jsonl
         """
         abs_path = os.path.abspath(file_path)
-        
-        # 경로에서 subjectives 또는 multiples를 찾아서 _validated 추가
         path_parts = abs_path.split(os.sep)
         
         for i, part in enumerate(path_parts):
@@ -136,6 +184,14 @@ class ValidateWatcher:
                 else:
                     result["incorrect"] += 1
             
+            # 문제별 통계 업데이트
+            parsed = self._parse_file_path(file_path)
+            if parsed:
+                source, question_type, problem_idx, gen_idx = parsed
+                key = (source, question_type, problem_idx)
+                self.problem_stats[key]["correct"] += result["correct"]
+                self.problem_stats[key]["total"] += result["total"]
+            
             # 정답이 있으면 저장
             if correct_items:
                 output_path = self._get_validated_output_path(file_path)
@@ -154,7 +210,6 @@ class ValidateWatcher:
     def _print_progress(self, result: Dict[str, Any]):
         """진행 상황 출력"""
         status = "✓" if result["correct"] > 0 else "✗"
-        # 파일명과 부모 폴더 표시
         parent = os.path.basename(os.path.dirname(result['file']))
         fname = os.path.basename(result['file'])
         print(f"  {status} {parent}/{fname}: "
@@ -172,6 +227,66 @@ class ValidateWatcher:
         print(f"  - 오답: {self.stats['incorrect']}")
         print(f"{'='*50}")
     
+    def _find_problems_needing_retry(self) -> list:
+        """정답이 0개인 문제 목록 반환"""
+        problems_needing_retry = []
+        
+        for (source, question_type, problem_idx), stats in self.problem_stats.items():
+            if stats["correct"] == 0 and stats["total"] > 0:
+                problems_needing_retry.append({
+                    "source": source,
+                    "problem_idx": problem_idx,
+                    "question_type": question_type,
+                    "total_generated": stats["total"]
+                })
+        
+        return problems_needing_retry
+    
+    def _save_retry_queue(self):
+        """재생성 필요 문제를 파일에 저장"""
+        if not self.retry_queue_file:
+            return
+        
+        problems = self._find_problems_needing_retry()
+        
+        if problems:
+            os.makedirs(os.path.dirname(self.retry_queue_file) if os.path.dirname(self.retry_queue_file) else ".", exist_ok=True)
+            with open(self.retry_queue_file, 'w', encoding='utf-8') as f:
+                for p in problems:
+                    f.write(json.dumps(p, ensure_ascii=False) + '\n')
+            print(f"\n재생성 필요 문제 {len(problems)}개 → {self.retry_queue_file}")
+        else:
+            # 재생성 필요 없으면 파일 삭제
+            if os.path.exists(self.retry_queue_file):
+                os.remove(self.retry_queue_file)
+            print(f"\n재생성 필요 문제: 없음 (모든 문제에 정답 있음)")
+    
+    def _print_retry_summary(self):
+        """재생성 필요 문제 요약 출력"""
+        problems = self._find_problems_needing_retry()
+        
+        if problems:
+            print(f"\n{'='*50}")
+            print(f"⚠️  재생성 필요 문제: {len(problems)}개")
+            print(f"{'='*50}")
+            
+            # source별로 그룹화
+            by_source = defaultdict(list)
+            for p in problems:
+                by_source[p["source"]].append(p)
+            
+            for source, items in sorted(by_source.items()):
+                subj = [p for p in items if p["question_type"] == "subjectives"]
+                mult = [p for p in items if p["question_type"] == "multiples"]
+                print(f"  {source}:")
+                if subj:
+                    indices = [p["problem_idx"] for p in subj]
+                    print(f"    - subjectives: {len(subj)}개 (문제 {indices})")
+                if mult:
+                    indices = [p["problem_idx"] for p in mult]
+                    print(f"    - multiples: {len(mult)}개 (문제 {indices})")
+            print(f"{'='*50}")
+    
     def run(self):
         """Watcher 실행"""
         print(f"{'='*50}")
@@ -185,14 +300,14 @@ class ValidateWatcher:
         print(f"체크 간격: {self.poll_interval}초")
         if self.stop_file:
             print(f"종료 파일: {self.stop_file}")
+        if self.retry_queue_file:
+            print(f"재생성 큐: {self.retry_queue_file}")
         print(f"{'='*50}\n")
         
-        # 기존 파일 목록 (이미 처리된 것으로 간주할지 여부)
-        # 새로 시작하면 기존 파일도 처리
+        # 기존 파일 처리
         existing_files = self._get_existing_files()
         print(f"기존 파일 {len(existing_files)}개 발견, 처리 시작...\n")
         
-        # 기존 파일 처리
         for file_path in sorted(existing_files):
             if not self.running:
                 break
@@ -226,7 +341,6 @@ class ValidateWatcher:
                     if not self.running:
                         break
                     
-                    # 파일 쓰기 완료 대기 (짧은 딜레이)
                     time.sleep(0.1)
                     
                     result = self._validate_and_save(file_path)
@@ -239,10 +353,12 @@ class ValidateWatcher:
             
             time.sleep(self.poll_interval)
         
-        # 최종 통계
+        # 최종 통계 및 재생성 큐 저장
         print("\n" + "="*50)
         print("Watcher 종료")
         self._print_stats()
+        self._print_retry_summary()
+        self._save_retry_queue()
 
 
 def main():
@@ -255,6 +371,10 @@ def main():
                         help="파일 체크 간격 (초, 기본: 1.0)")
     parser.add_argument("--stop_file", type=str, default=None,
                         help="이 파일이 생성되면 watcher 종료")
+    parser.add_argument("--retry_queue", type=str, default=None,
+                        help="재생성 필요 문제 저장 파일 경로")
+    parser.add_argument("--expected_n", type=int, default=10,
+                        help="문제당 예상 생성 횟수 (기본: 10)")
     
     args = parser.parse_args()
     
@@ -262,7 +382,9 @@ def main():
         watch_dirs=args.watch_dirs,
         base_output_dir=args.output_dir,
         poll_interval=args.interval,
-        stop_file=args.stop_file
+        stop_file=args.stop_file,
+        retry_queue_file=args.retry_queue,
+        expected_n=args.expected_n
     )
     
     watcher.run()
