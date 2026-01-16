@@ -254,9 +254,9 @@ class ValidateWatcher:
                 qtype_display = "주관식" if qtype == "subjectives" else "객관식"
                 
                 print(f"║  {source} ({qtype_display})" + " " * (68 - len(source) - len(qtype_display) - 7) + "║")
-                print("║  ┌────┬────────┬────────┬────────────────────────────────────────┐  ║")
-                print("║  │ #  │ 생성   │ 정답   │ 진행률                                 │  ║")
-                print("║  ├────┼────────┼────────┼────────────────────────────────────────┤  ║")
+                print("║  ┌────┬────────┬──────────────────────────────────────────────┐  ║")
+                print("║  │ #  │ 생성   │ 진행률                                       │  ║")
+                print("║  ├────┼────────┼──────────────────────────────────────────────┤  ║")
                 
                 for p in problems:
                     idx = p["problem_idx"] + 1  # 1-based 표시
@@ -280,9 +280,9 @@ class ValidateWatcher:
                     if correct > 0:
                         total_with_correct += 1
                     
-                    print(f"║  │{idx:3d} │ {gen:2d}/{self.expected_n:<2d}  │  {correct:3d}   │ {bar} {progress:3.0f}% {status}│  ║")
+                    print(f"║  │{idx:3d} │ {gen:2d}/{self.expected_n:<2d}  │ {bar} {progress:3.0f}% {status}│  ║")
                 
-                print("║  └────┴────────┴────────┴────────────────────────────────────────┘  ║")
+                print("║  └────┴────────┴──────────────────────────────────────────────┘  ║")
                 print("║" + " " * 68 + "║")
         
         # 전체 통계
