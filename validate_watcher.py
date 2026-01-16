@@ -1,6 +1,10 @@
 """
 SFT 데이터 실시간 검증 Watcher
 새로 생성되는 파일을 감지하여 즉시 검증하고 정답만 저장합니다.
+
+저장 구조:
+  - 과목/subjectives/ → 과목/subjectives_validated/
+  - 과목/multiples/   → 과목/multiples_validated/
 """
 import os
 import sys
@@ -24,17 +28,17 @@ from validate_sft_data import (
 class ValidateWatcher:
     """디렉토리를 모니터링하고 새 파일을 검증하는 Watcher"""
     
-    def __init__(self, watch_dirs: list, output_dir: str, 
+    def __init__(self, watch_dirs: list, base_output_dir: str, 
                  poll_interval: float = 1.0, stop_file: str = None):
         """
         Args:
-            watch_dirs: 모니터링할 디렉토리 목록
-            output_dir: 검증된 데이터를 저장할 디렉토리
+            watch_dirs: 모니터링할 디렉토리 목록 (예: [sft_output/2022_math/subjectives, ...])
+            base_output_dir: 기본 출력 디렉토리 (예: sft_output)
             poll_interval: 파일 체크 간격 (초)
             stop_file: 이 파일이 생성되면 watcher 종료
         """
-        self.watch_dirs = watch_dirs
-        self.output_dir = output_dir
+        self.watch_dirs = [os.path.abspath(d) for d in watch_dirs]
+        self.base_output_dir = os.path.abspath(base_output_dir)
         self.poll_interval = poll_interval
         self.stop_file = stop_file
         
@@ -52,9 +56,6 @@ class ValidateWatcher:
         # 종료 플래그
         self.running = True
         
-        # 출력 디렉토리 생성
-        os.makedirs(output_dir, exist_ok=True)
-        
         # 종료 신호 핸들러
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -64,17 +65,51 @@ class ValidateWatcher:
         print(f"\n종료 신호 수신 (signal {signum})")
         self.running = False
     
+    def _is_in_validated_dir(self, file_path: str) -> bool:
+        """파일이 _validated 폴더에 있는지 확인 (재귀 방지)"""
+        return "_validated" in file_path
+    
     def _get_existing_files(self) -> Set[str]:
-        """현재 존재하는 모든 .jsonl 파일 목록 반환"""
+        """현재 존재하는 모든 .jsonl 파일 목록 반환 (_validated 폴더 제외)"""
         files = set()
         for watch_dir in self.watch_dirs:
             if not os.path.exists(watch_dir):
                 continue
-            for root, _, filenames in os.walk(watch_dir):
+            # _validated 폴더는 제외
+            if self._is_in_validated_dir(watch_dir):
+                continue
+            for root, dirs, filenames in os.walk(watch_dir):
+                # _validated 디렉토리는 탐색에서 제외
+                dirs[:] = [d for d in dirs if "_validated" not in d]
                 for fname in filenames:
                     if fname.endswith('.jsonl'):
-                        files.add(os.path.join(root, fname))
+                        file_path = os.path.join(root, fname)
+                        if not self._is_in_validated_dir(file_path):
+                            files.add(file_path)
         return files
+    
+    def _get_validated_output_path(self, file_path: str) -> str:
+        """
+        원본 파일 경로에서 검증된 파일 저장 경로를 계산합니다.
+        
+        예:
+          sft_output/2022_math/subjectives/0_0.jsonl
+          → sft_output/2022_math/subjectives_validated/0_0.jsonl
+          
+          sft_output/2022_math/multiples/0_0.jsonl
+          → sft_output/2022_math/multiples_validated/0_0.jsonl
+        """
+        abs_path = os.path.abspath(file_path)
+        
+        # 경로에서 subjectives 또는 multiples를 찾아서 _validated 추가
+        path_parts = abs_path.split(os.sep)
+        
+        for i, part in enumerate(path_parts):
+            if part in ("subjectives", "multiples"):
+                path_parts[i] = part + "_validated"
+                break
+        
+        return os.sep.join(path_parts)
     
     def _validate_and_save(self, file_path: str) -> Dict[str, Any]:
         """파일을 검증하고 정답만 저장"""
@@ -103,17 +138,7 @@ class ValidateWatcher:
             
             # 정답이 있으면 저장
             if correct_items:
-                # 원본 경로 구조 유지
-                rel_path = None
-                for watch_dir in self.watch_dirs:
-                    if file_path.startswith(watch_dir):
-                        rel_path = os.path.relpath(file_path, watch_dir)
-                        break
-                
-                if rel_path is None:
-                    rel_path = os.path.basename(file_path)
-                
-                output_path = os.path.join(self.output_dir, rel_path)
+                output_path = self._get_validated_output_path(file_path)
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 
                 with open(output_path, 'w', encoding='utf-8') as f:
@@ -129,7 +154,10 @@ class ValidateWatcher:
     def _print_progress(self, result: Dict[str, Any]):
         """진행 상황 출력"""
         status = "✓" if result["correct"] > 0 else "✗"
-        print(f"  {status} {os.path.basename(result['file'])}: "
+        # 파일명과 부모 폴더 표시
+        parent = os.path.basename(os.path.dirname(result['file']))
+        fname = os.path.basename(result['file'])
+        print(f"  {status} {parent}/{fname}: "
               f"{result['correct']}/{result['total']} 정답")
     
     def _print_stats(self):
@@ -149,8 +177,11 @@ class ValidateWatcher:
         print(f"{'='*50}")
         print(f"실시간 검증 Watcher 시작")
         print(f"{'='*50}")
-        print(f"모니터링 디렉토리: {self.watch_dirs}")
-        print(f"출력 디렉토리: {self.output_dir}")
+        print(f"모니터링 디렉토리:")
+        for d in self.watch_dirs:
+            print(f"  - {d}")
+        print(f"저장 방식: subjectives → subjectives_validated")
+        print(f"          multiples → multiples_validated")
         print(f"체크 간격: {self.poll_interval}초")
         if self.stop_file:
             print(f"종료 파일: {self.stop_file}")
@@ -217,9 +248,9 @@ class ValidateWatcher:
 def main():
     parser = argparse.ArgumentParser(description="SFT 데이터 실시간 검증 Watcher")
     parser.add_argument("--watch_dirs", nargs='+', required=True,
-                        help="모니터링할 디렉토리 (여러 개 지정 가능)")
+                        help="모니터링할 디렉토리 (예: sft_output/2022_math/subjectives)")
     parser.add_argument("--output_dir", required=True,
-                        help="검증된 데이터를 저장할 디렉토리")
+                        help="기본 출력 디렉토리 (예: sft_output)")
     parser.add_argument("--interval", type=float, default=1.0,
                         help="파일 체크 간격 (초, 기본: 1.0)")
     parser.add_argument("--stop_file", type=str, default=None,
@@ -229,7 +260,7 @@ def main():
     
     watcher = ValidateWatcher(
         watch_dirs=args.watch_dirs,
-        output_dir=args.output_dir,
+        base_output_dir=args.output_dir,
         poll_interval=args.interval,
         stop_file=args.stop_file
     )

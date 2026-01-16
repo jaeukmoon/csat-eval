@@ -1,6 +1,16 @@
 #!/bin/bash
 # SFT 데이터 생성 및 실시간 검증 파이프라인
 # tmux를 사용하여 생성과 검증을 병렬로 실행합니다.
+#
+# 저장 구조:
+#   sft_output/
+#     2022_math/
+#       subjectives/           <- 생성된 주관식 버전
+#       multiples/             <- 생성된 객관식 버전
+#       subjectives_validated/ <- 검증된 주관식 (정답만)
+#       multiples_validated/   <- 검증된 객관식 (정답만)
+#     2025_math/
+#       ...
 
 set -e  # 오류 발생 시 중단
 
@@ -28,6 +38,7 @@ BASE_URL="http://10.0.74.208:8000/v1"
 MODEL="glm-4.7"
 
 # 특정 파일만 처리 (비워두면 모든 수학 파일 처리)
+# 예: INPUT_FILE="./data/2022_math.jsonl"
 INPUT_FILE=""
 
 # 병합만 수행 (true/false)
@@ -35,9 +46,6 @@ MERGE_ONLY=false
 
 # tmux 세션 이름
 TMUX_SESSION="sft_pipeline"
-
-# 검증된 데이터 저장 디렉토리
-VALIDATED_DIR="$OUTPUT_DIR/validated"
 
 # ============================================================================
 # 도움말
@@ -48,6 +56,12 @@ show_help() {
     echo ""
     echo "tmux를 사용하여 데이터 생성과 검증을 병렬로 실행합니다."
     echo "스크립트 상단의 설정값을 수정한 후 실행하세요."
+    echo ""
+    echo "저장 구조:"
+    echo "  sft_output/과목/subjectives/           <- 생성된 원본"
+    echo "  sft_output/과목/multiples/             <- 생성된 원본"
+    echo "  sft_output/과목/subjectives_validated/ <- 검증된 정답"
+    echo "  sft_output/과목/multiples_validated/   <- 검증된 정답"
     echo ""
     echo "옵션:"
     echo "  --no-tmux            tmux 없이 순차 실행 (기존 방식)"
@@ -112,7 +126,6 @@ echo "SFT 데이터 파이프라인"
 echo "========================================"
 echo "데이터 디렉토리: $DATA_DIR"
 echo "출력 디렉토리: $OUTPUT_DIR"
-echo "검증 출력: $VALIDATED_DIR"
 echo "생성 횟수 (n): $N"
 echo "워커 수: $WORKER"
 echo "출력 형식: $FORMAT"
@@ -130,7 +143,6 @@ echo ""
 # ============================================================================
 
 mkdir -p "$OUTPUT_DIR"
-mkdir -p "$VALIDATED_DIR"
 
 # 종료 신호 파일 경로
 STOP_FILE="$OUTPUT_DIR/.watcher_stop"
@@ -158,13 +170,10 @@ if [ "$MERGE_ONLY" = true ]; then
     GENERATE_CMD="$GENERATE_CMD --merge_only"
 fi
 
-# 모니터링할 디렉토리 목록 (subjectives, multiples 폴더들)
-WATCH_DIRS="$OUTPUT_DIR"
-
-# Watcher 명령어
+# Watcher 명령어 (OUTPUT_DIR 전체를 모니터링, _validated 폴더는 자동 제외됨)
 WATCHER_CMD="python validate_watcher.py \
-    --watch_dirs $WATCH_DIRS \
-    --output_dir $VALIDATED_DIR \
+    --watch_dirs $OUTPUT_DIR \
+    --output_dir $OUTPUT_DIR \
     --interval 2.0 \
     --stop_file $STOP_FILE"
 
@@ -216,9 +225,9 @@ if [ "$USE_TMUX" = true ]; then
         echo "왼쪽 pane: 실시간 검증 (Watcher)"
         echo "오른쪽 pane: 데이터 생성 (Generator)"
         echo ""
-        echo "출력 파일:"
-        echo "  - 생성된 원본: $OUTPUT_DIR/"
-        echo "  - 검증된 정답: $VALIDATED_DIR/"
+        echo "저장 구조:"
+        echo "  - 생성된 원본: $OUTPUT_DIR/과목/subjectives/, multiples/"
+        echo "  - 검증된 정답: $OUTPUT_DIR/과목/subjectives_validated/, multiples_validated/"
         echo ""
         
         # 자동으로 세션에 attach
@@ -250,7 +259,7 @@ else
         
         # 병합된 파일 경로
         MERGED_FILE="$OUTPUT_DIR/merged/sft_math_all_${FORMAT}.jsonl"
-        VALIDATED_FILE="$VALIDATED_DIR/sft_math_validated_${FORMAT}.jsonl"
+        VALIDATED_FILE="$OUTPUT_DIR/merged/sft_math_validated_${FORMAT}.jsonl"
         
         if [ -f "$MERGED_FILE" ]; then
             echo "검증 대상: $MERGED_FILE"
@@ -268,7 +277,8 @@ else
             echo "2단계 완료!"
         else
             echo "경고: 병합된 파일을 찾을 수 없음: $MERGED_FILE"
-            echo "생성 단계를 먼저 실행하세요."
+            echo "Watcher로 실시간 검증 수행..."
+            eval $WATCHER_CMD
         fi
     fi
     
@@ -277,8 +287,9 @@ else
     echo "파이프라인 완료!"
     echo "========================================"
     echo ""
-    echo "출력 파일:"
-    echo "  - 생성된 데이터: $OUTPUT_DIR/merged/sft_math_all_${FORMAT}.jsonl"
-    echo "  - 검증된 데이터: $VALIDATED_DIR/sft_math_validated_${FORMAT}.jsonl"
+    echo "저장 구조:"
+    echo "  - 생성된 원본: $OUTPUT_DIR/과목/subjectives/, multiples/"
+    echo "  - 검증된 정답: $OUTPUT_DIR/과목/subjectives_validated/, multiples_validated/"
+    echo "  - 병합된 파일: $OUTPUT_DIR/merged/"
     echo ""
 fi
