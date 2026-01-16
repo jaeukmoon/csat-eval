@@ -52,8 +52,10 @@ def append_jsonl(out_path, row):
 
 def is_multiple_choice(problem_text: str) -> bool:
     """객관식 문제인지 판별합니다."""
-    # itemize 환경이 있으면 객관식
-    return r"\begin{itemize}" in problem_text or r"\\begin{itemize}" in problem_text
+    # 선택지 패턴 확인: \item[1], \item[2], ... 등이 5개 이상 있는지
+    choice_pattern = r"\\item\[[1-5]\]"
+    matches = re.findall(choice_pattern, problem_text)
+    return len(matches) >= 5
 
 
 def remove_choices(problem_text: str) -> str:
@@ -454,27 +456,6 @@ def main():
             mc_count = sum(1 for p in problems if is_multiple_choice(p['problem']))
             print(f"  - 객관식 문제: {mc_count}개, 주관식 문제: {len(problems) - mc_count}개")
             
-            # 객관식 버전 생성 (multiples)
-            # - 객관식 문제: 선택지 유지
-            # - 주관식 문제: 그대로
-            mc_output_dir = os.path.join(args.output_dir, source, "multiples")
-            os.makedirs(mc_output_dir, exist_ok=True)
-            result_dirs.append(mc_output_dir)
-            
-            print(f"\n[객관식 버전 생성 시작] (전체 {len(problems)}개 문제)")
-            run_generation(
-                problems=problems,
-                request_sentences=request_sentences,
-                output_dir=mc_output_dir,
-                base_url=args.base_url,
-                model=args.model,
-                source=source,
-                format_type=args.format,
-                n=args.n,
-                max_workers=args.worker,
-                question_type="multiples"
-            )
-            
             # 주관식 버전 생성 (subjectives)
             # - 객관식 문제: 선택지 제거
             # - 주관식 문제: 그대로
@@ -494,6 +475,27 @@ def main():
                 n=args.n,
                 max_workers=args.worker,
                 question_type="subjectives"
+            )
+            
+            # 객관식 버전 생성 (multiples)
+            # - 객관식 문제: 선택지 유지
+            # - 주관식 문제: 그대로
+            mc_output_dir = os.path.join(args.output_dir, source, "multiples")
+            os.makedirs(mc_output_dir, exist_ok=True)
+            result_dirs.append(mc_output_dir)
+            
+            print(f"\n[객관식 버전 생성 시작] (전체 {len(problems)}개 문제)")
+            run_generation(
+                problems=problems,
+                request_sentences=request_sentences,
+                output_dir=mc_output_dir,
+                base_url=args.base_url,
+                model=args.model,
+                source=source,
+                format_type=args.format,
+                n=args.n,
+                max_workers=args.worker,
+                question_type="multiples"
             )
     else:
         # merge_only 모드: 기존 디렉토리 찾기
