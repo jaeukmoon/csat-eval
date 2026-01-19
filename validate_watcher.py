@@ -68,9 +68,9 @@ class ValidateWatcher:
         
         # 문제별 정답 개수 추적
         # 키: (source, question_type, problem_idx)
-        # 값: {"correct": int, "total": int, "generated": int}
+        # 값: {"correct": int, "total": int, "generated": int, "retry_count": int}
         self.problem_stats: Dict[Tuple[str, str, int], Dict[str, int]] = defaultdict(
-            lambda: {"correct": 0, "total": 0, "generated": 0}
+            lambda: {"correct": 0, "total": 0, "generated": 0, "retry_count": 0}
         )
         
         # 통계
@@ -261,7 +261,10 @@ class ValidateWatcher:
             
             for item in data:
                 validation = validate_item(item)
-                if validation["is_correct"]:
+                # 정답 + 풀이 과정 모두 있어야 유효 (객관식/주관식 공통)
+                is_valid = validation["is_correct"] and validation["has_reasoning"]
+                
+                if is_valid:
                     result["correct"] += 1
                     correct_items.append(item)
                 else:
@@ -275,6 +278,10 @@ class ValidateWatcher:
                 self.problem_stats[key]["correct"] += result["correct"]
                 self.problem_stats[key]["total"] += result["total"]
                 self.problem_stats[key]["generated"] += 1
+                
+                # 재생성 횟수 추적 (gen_idx >= expected_n이면 재생성)
+                if gen_idx >= self.expected_n:
+                    self.problem_stats[key]["retry_count"] += 1
             
             # 정답이 있으면 저장
             if correct_items:
@@ -300,7 +307,8 @@ class ValidateWatcher:
                 "problem_idx": problem_idx,
                 "generated": stats["generated"],
                 "correct": stats["correct"],
-                "total": stats["total"]
+                "total": stats["total"],
+                "retry_count": stats["retry_count"]
             })
         
         # 문제 번호로 정렬
@@ -347,25 +355,41 @@ class ValidateWatcher:
                     idx = p["problem_idx"] + 1  # 1-based 표시
                     gen = p["generated"]
                     correct = p["correct"]
+                    retry = p.get("retry_count", 0)
                     
-                    progress = (gen / self.expected_n * 100) if self.expected_n > 0 else 0
+                    # 생성 표시: 재생성 있으면 "기본+재생성/총" 형식
+                    if retry > 0:
+                        base_gen = gen - retry
+                        gen_display = f"{base_gen}+{retry:<2d}"
+                    else:
+                        gen_display = f"{gen:2d}/{self.expected_n:<2d}"
+                    
+                    # 진행률은 기본 expected_n 기준으로 계산
+                    base_expected = self.expected_n
+                    progress = (min(gen, base_expected) / base_expected * 100) if base_expected > 0 else 0
                     bar_filled = int(progress / 5)
                     bar = "█" * bar_filled + "░" * (20 - bar_filled)
                     
                     # 상태 표시
                     if gen >= self.expected_n:
                         if correct > 0:
-                            status = "✓"
+                            if retry > 0:
+                                status = "✓재"  # 재생성 후 정답 확보
+                            else:
+                                status = "✓ "
                         else:
-                            status = "⚠"
+                            if retry > 0:
+                                status = "⚠재"  # 재생성 중
+                            else:
+                                status = "⚠ "
                     else:
-                        status = " "
+                        status = "  "
                     
                     total_problems += 1
                     if correct > 0:
                         total_with_correct += 1
                     
-                    print(f"║  │{idx:3d} │ {gen:2d}/{self.expected_n:<2d}  │  {correct:3d}   │ {bar} {progress:3.0f}% {status}│  ║")
+                    print(f"║  │{idx:3d} │{gen_display:>7s} │  {correct:3d}   │ {bar} {progress:3.0f}% {status}│  ║")
                 
                 print("║  └────┴────────┴────────┴────────────────────────────────────────┘  ║")
                 print("║" + " " * 68 + "║")
@@ -376,11 +400,23 @@ class ValidateWatcher:
         coverage = (total_with_correct / total_problems * 100 
                     if total_problems > 0 else 0)
         
+        # 재생성 관련 통계 계산
+        total_retry_count = 0
+        problems_with_retry = 0
+        for (source, qtype, prob_idx), stats in self.problem_stats.items():
+            if stats["retry_count"] > 0:
+                total_retry_count += stats["retry_count"]
+                problems_with_retry += 1
+        
         print("╠" + "═" * 68 + "╣")
         print(f"║  전체 통계                                                          ║")
         print(f"║    - 처리된 파일: {self.stats['total_files']:5d}                                         ║")
         print(f"║    - 총 생성: {self.stats['total_items']:5d} | 정답: {self.stats['correct']:5d} ({accuracy:5.1f}%)                   ║")
         print(f"║    - 문제 커버리지: {total_with_correct}/{total_problems} ({coverage:.1f}%) 문제에 최소 1개 정답         ║")
+        
+        # 재생성 진행 현황
+        if total_retry_count > 0:
+            print(f"║    - 재생성 진행: {problems_with_retry}개 문제 (총 {total_retry_count}회 추가 생성)                   ║")
         
         # 재생성 필요 문제
         retry_problems = self._find_problems_needing_retry()

@@ -32,6 +32,63 @@ def to_jsonl(out_path: str, data: List[Dict]) -> None:
 BOXED_RE = re.compile(r"\\boxed\{([^}]+)\}")
 BOXED_NESTED_RE = re.compile(r"\\boxed\{(.+)\}", re.DOTALL)
 
+# 풀이 과정 신호 패턴들
+REASONING_KEYWORDS = [
+    "먼저", "따라서", "그러므로", "그래서", "왜냐하면",
+    "정리하면", "계산하면", "대입하면", "가정하면",
+    "이므로", "이면", "경우", "식을", "값을", "구하면",
+    "풀이", "해결", "접근", "분석", "확인"
+]
+REASONING_MATH_SIGNALS = [
+    r"=",           # 등호
+    r"\\frac",      # 분수
+    r"\\sqrt",      # 제곱근
+    r"\\begin",     # 수식 환경
+    r"\\\[",        # display math 시작
+    r"\\sum",       # 합
+    r"\\int",       # 적분
+    r"\\lim",       # 극한
+    r"\\rightarrow", # 화살표
+    r"\\Rightarrow", # 이중 화살표
+]
+
+
+def has_reasoning(text: str) -> bool:
+    """
+    풀이 과정이 포함되어 있는지 확인합니다.
+    boxed 제거 후 키워드 또는 수식 신호가 1개 이상 있으면 True.
+    
+    Args:
+        text: 검사할 텍스트 (assistant 응답)
+    
+    Returns:
+        풀이 과정이 있으면 True, 없으면 False
+    """
+    if not text:
+        return False
+    
+    # \boxed{...} 제거 (중첩 포함)
+    text_without_boxed = re.sub(r"\\boxed\{[^}]*\}", "", text)
+    # 중첩된 boxed도 제거 시도
+    text_without_boxed = re.sub(r"\\boxed\{.+?\}", "", text_without_boxed, flags=re.DOTALL)
+    text_without_boxed = text_without_boxed.strip()
+    
+    # 텍스트가 너무 짧으면 과정 없음으로 간주
+    if len(text_without_boxed) < 10:
+        return False
+    
+    # 키워드 체크 (OR 조건 - 하나만 있어도 통과)
+    for kw in REASONING_KEYWORDS:
+        if kw in text_without_boxed:
+            return True
+    
+    # 수식 신호 체크 (OR 조건 - 하나만 있어도 통과)
+    for pattern in REASONING_MATH_SIGNALS:
+        if re.search(pattern, text_without_boxed):
+            return True
+    
+    return False
+
 
 def extract_boxed_answer(text: str) -> Optional[str]:
     """
@@ -191,18 +248,21 @@ def get_assistant_content(item: Dict) -> Optional[str]:
 def validate_item(item: Dict) -> Dict:
     """
     단일 항목을 검증하고 결과를 반환합니다.
+    정답 여부와 풀이 과정 존재 여부를 모두 확인합니다.
     """
     ground_truth = item.get("answer")
     assistant_content = get_assistant_content(item)
     
     extracted = extract_boxed_answer(assistant_content) if assistant_content else None
     is_correct = check_answer(extracted, ground_truth)
+    has_reason = has_reasoning(assistant_content)
     
     return {
         "item": item,
         "extracted_answer": extracted,
         "ground_truth": ground_truth,
-        "is_correct": is_correct
+        "is_correct": is_correct,
+        "has_reasoning": has_reason
     }
 
 
