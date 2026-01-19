@@ -42,7 +42,8 @@ class ValidateWatcher:
     def __init__(self, watch_dirs: list, base_output_dir: str, 
                  poll_interval: float = 1.0, stop_file: str = None,
                  retry_queue_file: str = None, expected_n: int = 10,
-                 dashboard_interval: int = 10, status_file: str = None):
+                 dashboard_interval: int = 10, status_file: str = None,
+                 rescan: bool = False):
         """
         Args:
             watch_dirs: 모니터링할 디렉토리 목록
@@ -53,6 +54,7 @@ class ValidateWatcher:
             expected_n: 문제당 예상 생성 횟수
             dashboard_interval: 대시보드 갱신 간격 (초)
             status_file: 상태 저장 파일 경로
+            rescan: True면 validated 폴더 상태를 신뢰하지 않고 원본 폴더를 전체 재검증
         """
         self.watch_dirs = [os.path.abspath(d) for d in watch_dirs]
         self.base_output_dir = os.path.abspath(base_output_dir)
@@ -62,6 +64,7 @@ class ValidateWatcher:
         self.expected_n = expected_n
         self.dashboard_interval = dashboard_interval
         self.status_file = status_file
+        self.rescan = rescan
         
         # 처리된 파일 추적
         self.processed_files: Set[str] = set()
@@ -229,11 +232,14 @@ class ValidateWatcher:
                         self.problem_stats[key]["total"] += correct_count
                         self.problem_stats[key]["generated"] += 1
                         
-                        # 이미 검증된 원본 파일 경로를 processed_files에 추가
-                        # (원본 폴더 경로로 변환)
-                        original_dir = os.path.join(source_path, qtype)
-                        original_file = os.path.join(original_dir, fname)
-                        self.processed_files.add(original_file)
+                        # rescan 모드에서는 validated 상태를 신뢰하지 않으므로
+                        # 원본 파일을 processed_files로 마킹하지 않음
+                        if not self.rescan:
+                            # 이미 검증된 원본 파일 경로를 processed_files에 추가
+                            # (원본 폴더 경로로 변환)
+                            original_dir = os.path.join(source_path, qtype)
+                            original_file = os.path.join(original_dir, fname)
+                            self.processed_files.add(original_file)
                         
                         validated_count += 1
                         
@@ -242,8 +248,50 @@ class ValidateWatcher:
         
         print(f"  → 기존 검증 완료 파일: {validated_count}개")
     
+    def _bootstrap_problem_stats_from_originals(self):
+        """
+        원본 output 폴더(subjectives/, multiples/)를 스캔해서 problem_stats를 미리 채웁니다.
+        validate_only/rescan에서 'validated 누락 문제'를 정확히 잡기 위함입니다.
+        """
+        print("원본 생성 폴더 스캔 중... (problem_stats 초기화)")
+        total_files = 0
+        
+        for watch_dir in self.watch_dirs:
+            if not os.path.exists(watch_dir):
+                continue
+            if self._is_in_validated_dir(watch_dir):
+                continue
+            
+            for root, dirs, filenames in os.walk(watch_dir):
+                # validated 폴더 제외
+                dirs[:] = [d for d in dirs if "_validated" not in d]
+                
+                for fname in filenames:
+                    if not fname.endswith(".jsonl"):
+                        continue
+                    file_path = os.path.join(root, fname)
+                    if self._is_in_validated_dir(file_path):
+                        continue
+                    
+                    parsed = self._parse_file_path(file_path)
+                    if not parsed:
+                        continue
+                    
+                    source, question_type, problem_idx, gen_idx = parsed
+                    key = (source, question_type, problem_idx)
+                    
+                    # generated는 '해당 problem_idx에 대해 원본 파일이 몇 개 존재하는가'로 카운트
+                    self.problem_stats[key]["generated"] += 1
+                    total_files += 1
+                    
+                    # 재생성 여부
+                    if gen_idx >= self.expected_n:
+                        self.problem_stats[key]["retry_count"] += 1
+        
+        print(f"  → 원본 파일 스캔 완료: {total_files}개")
+    
     def _validate_and_save(self, file_path: str) -> Dict[str, Any]:
-        """파일을 검증하고 정답만 저장"""
+        """파일을 검증하고 정답(및 풀이 과정 포함)만 저장"""
         result = {
             "file": file_path,
             "total": 0,
@@ -291,6 +339,14 @@ class ValidateWatcher:
                 with open(output_path, 'w', encoding='utf-8') as f:
                     for item in correct_items:
                         f.write(json.dumps(item, ensure_ascii=False) + '\n')
+            else:
+                # 재검증(rescan/validate_only) 시 기존 validated 파일이 남아있는 것을 방지
+                output_path = self._get_validated_output_path(file_path)
+                if os.path.exists(output_path):
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
             
             return result
             
@@ -575,8 +631,16 @@ class ValidateWatcher:
             print(f"상태 파일: {self.status_file}")
         print(f"{'='*50}\n")
         
-        # 기존 validated 폴더 스캔 (재시작 시 상태 복원)
-        self._scan_validated_folders()
+        # rescan 모드면 기존 상태를 신뢰하지 않고 원본 폴더 기반으로 통계부터 구성
+        # (validated 누락 문제/재생성 진행 표시를 정확히 하기 위함)
+        if self.rescan:
+            self.processed_files.clear()
+            # 기존 상태를 날리고 원본 기반으로 다시 집계
+            self.problem_stats = defaultdict(lambda: {"correct": 0, "total": 0, "generated": 0, "retry_count": 0})
+            self._bootstrap_problem_stats_from_originals()
+        else:
+            # 기존 validated 폴더 스캔 (재시작 시 상태 복원)
+            self._scan_validated_folders()
         
         # 기존 파일 처리
         existing_files = self._get_existing_files()
@@ -659,6 +723,8 @@ def main():
                         help="대시보드 갱신 간격 (초, 기본: 10)")
     parser.add_argument("--status_file", type=str, default=None,
                         help="상태 저장 파일 경로 (.status.json)")
+    parser.add_argument("--rescan", action="store_true",
+                        help="validated 상태를 신뢰하지 않고 원본 폴더를 전체 재검증/재집계")
     
     args = parser.parse_args()
     
@@ -670,7 +736,8 @@ def main():
         retry_queue_file=args.retry_queue,
         expected_n=args.expected_n,
         dashboard_interval=args.dashboard_interval,
-        status_file=args.status_file
+        status_file=args.status_file,
+        rescan=args.rescan
     )
     
     watcher.run()

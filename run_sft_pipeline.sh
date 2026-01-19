@@ -198,7 +198,12 @@ build_generate_cmd() {
 }
 
 build_watcher_cmd() {
-    echo "python validate_watcher.py \
+    local EXTRA_ARGS=""
+    # validate_only 모드에서는 기존 validated를 신뢰하지 않고 전체 재검증/재집계
+    if [ \"$VALIDATE_ONLY\" = true ]; then
+        EXTRA_ARGS=\"--rescan\"
+    fi
+    echo \"python validate_watcher.py \\
         --watch_dirs $OUTPUT_DIR \
         --output_dir $OUTPUT_DIR \
         --interval 2.0 \
@@ -206,7 +211,8 @@ build_watcher_cmd() {
         --retry_queue $RETRY_QUEUE \
         --expected_n $N \
         --dashboard_interval 10 \
-        --status_file $STATUS_FILE"
+        --status_file $STATUS_FILE \
+        $EXTRA_ARGS\"
 }
 
 # ============================================================================
