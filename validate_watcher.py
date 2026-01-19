@@ -157,6 +157,91 @@ class ValidateWatcher:
         
         return os.sep.join(path_parts)
     
+    def _get_validated_dir(self, source: str, question_type: str) -> str:
+        """source와 question_type에 해당하는 validated 디렉토리 경로 반환"""
+        return os.path.join(self.base_output_dir, source, f"{question_type}_validated")
+    
+    def _check_validated_exists(self, source: str, question_type: str, problem_idx: int) -> bool:
+        """해당 문제에 대한 검증된 파일이 하나라도 있는지 확인 (validated 폴더 기준)"""
+        validated_dir = self._get_validated_dir(source, question_type)
+        if not os.path.exists(validated_dir):
+            return False
+        
+        # 해당 문제 번호로 시작하는 파일이 있는지 확인
+        for fname in os.listdir(validated_dir):
+            if fname.startswith(f"{problem_idx}_") and fname.endswith(".jsonl"):
+                return True
+        return False
+    
+    def _count_validated_files(self, source: str, question_type: str, problem_idx: int) -> int:
+        """해당 문제에 대한 검증된 파일 개수 반환 (validated 폴더 기준)"""
+        validated_dir = self._get_validated_dir(source, question_type)
+        if not os.path.exists(validated_dir):
+            return 0
+        
+        count = 0
+        for fname in os.listdir(validated_dir):
+            if fname.startswith(f"{problem_idx}_") and fname.endswith(".jsonl"):
+                count += 1
+        return count
+    
+    def _scan_validated_folders(self):
+        """기존 validated 폴더를 스캔하여 통계 초기화"""
+        print("기존 검증 완료 폴더 스캔 중...")
+        validated_count = 0
+        
+        # base_output_dir 내의 모든 source 디렉토리 탐색
+        if not os.path.exists(self.base_output_dir):
+            return
+        
+        for source_name in os.listdir(self.base_output_dir):
+            source_path = os.path.join(self.base_output_dir, source_name)
+            if not os.path.isdir(source_path):
+                continue
+            
+            # subjectives_validated, multiples_validated 폴더 확인
+            for qtype in ["subjectives", "multiples"]:
+                validated_dir = os.path.join(source_path, f"{qtype}_validated")
+                if not os.path.exists(validated_dir):
+                    continue
+                
+                # 해당 폴더의 모든 jsonl 파일 스캔
+                for fname in os.listdir(validated_dir):
+                    if not fname.endswith(".jsonl"):
+                        continue
+                    
+                    match = re.match(r"(\d+)_(\d+)\.jsonl$", fname)
+                    if not match:
+                        continue
+                    
+                    problem_idx = int(match.group(1))
+                    gen_idx = int(match.group(2))
+                    
+                    key = (source_name, qtype, problem_idx)
+                    
+                    # 파일 내용을 읽어서 정답 개수 카운트
+                    file_path = os.path.join(validated_dir, fname)
+                    try:
+                        data = open_jsonl(file_path)
+                        correct_count = len(data)  # validated 폴더의 파일은 모두 정답
+                        
+                        self.problem_stats[key]["correct"] += correct_count
+                        self.problem_stats[key]["total"] += correct_count
+                        self.problem_stats[key]["generated"] += 1
+                        
+                        # 이미 검증된 원본 파일 경로를 processed_files에 추가
+                        # (원본 폴더 경로로 변환)
+                        original_dir = os.path.join(source_path, qtype)
+                        original_file = os.path.join(original_dir, fname)
+                        self.processed_files.add(original_file)
+                        
+                        validated_count += 1
+                        
+                    except Exception as e:
+                        print(f"  오류: {file_path} - {e}")
+        
+        print(f"  → 기존 검증 완료 파일: {validated_count}개")
+    
     def _validate_and_save(self, file_path: str) -> Dict[str, Any]:
         """파일을 검증하고 정답만 저장"""
         result = {
@@ -254,9 +339,9 @@ class ValidateWatcher:
                 qtype_display = "주관식" if qtype == "subjectives" else "객관식"
                 
                 print(f"║  {source} ({qtype_display})" + " " * (68 - len(source) - len(qtype_display) - 7) + "║")
-                print("║  ┌────┬────────┬──────────────────────────────────────────────┐  ║")
-                print("║  │ #  │ 생성   │ 진행률                                       │  ║")
-                print("║  ├────┼────────┼──────────────────────────────────────────────┤  ║")
+                print("║  ┌────┬────────┬────────┬────────────────────────────────────────┐  ║")
+                print("║  │ #  │ 생성   │ 정답   │ 진행률                                 │  ║")
+                print("║  ├────┼────────┼────────┼────────────────────────────────────────┤  ║")
                 
                 for p in problems:
                     idx = p["problem_idx"] + 1  # 1-based 표시
@@ -280,9 +365,9 @@ class ValidateWatcher:
                     if correct > 0:
                         total_with_correct += 1
                     
-                    print(f"║  │{idx:3d} │ {gen:2d}/{self.expected_n:<2d}  │ {bar} {progress:3.0f}% {status}│  ║")
+                    print(f"║  │{idx:3d} │ {gen:2d}/{self.expected_n:<2d}  │  {correct:3d}   │ {bar} {progress:3.0f}% {status}│  ║")
                 
-                print("║  └────┴────────┴──────────────────────────────────────────────┘  ║")
+                print("║  └────┴────────┴────────┴────────────────────────────────────────┘  ║")
                 print("║" + " " * 68 + "║")
         
         # 전체 통계
@@ -370,11 +455,18 @@ class ValidateWatcher:
         print(f"{'='*50}")
     
     def _find_problems_needing_retry(self) -> list:
-        """정답이 0개인 문제 목록 반환"""
+        """정답이 0개인 문제 목록 반환 (validated 폴더 기준으로 실제 확인)"""
         problems_needing_retry = []
         
         for (source, question_type, problem_idx), stats in self.problem_stats.items():
-            if stats["correct"] == 0 and stats["generated"] >= self.expected_n:
+            # 생성이 완료된 문제인지 확인
+            if stats["generated"] < self.expected_n:
+                continue
+            
+            # validated 폴더에 실제로 파일이 있는지 확인
+            has_validated = self._check_validated_exists(source, question_type, problem_idx)
+            
+            if not has_validated:
                 problems_needing_retry.append({
                     "source": source,
                     "problem_idx": problem_idx,
@@ -446,6 +538,9 @@ class ValidateWatcher:
         if self.status_file:
             print(f"상태 파일: {self.status_file}")
         print(f"{'='*50}\n")
+        
+        # 기존 validated 폴더 스캔 (재시작 시 상태 복원)
+        self._scan_validated_folders()
         
         # 기존 파일 처리
         existing_files = self._get_existing_files()
