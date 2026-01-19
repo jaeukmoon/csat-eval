@@ -70,7 +70,7 @@ show_help() {
     echo "옵션:"
     echo "  --no-tmux            tmux 없이 순차 실행 (기존 방식)"
     echo "  --generate_only      생성만 수행 (검증 스킵)"
-    echo "  --validate_only      검증만 수행 (생성 스킵)"
+    echo "  --validate_and_retry 기존 데이터 재검증 + 누락 문제 자동 재생성"
     echo "  --merge_only         기존 결과 병합만 수행"
     echo "  --no-retry           재생성 비활성화"
     echo "  -h, --help           도움말 출력"
@@ -78,6 +78,7 @@ show_help() {
     echo "예시:"
     echo "  $0                   # tmux 병렬 실행 + 자동 재생성 (권장)"
     echo "  $0 --no-tmux         # 순차 실행"
+    echo "  $0 --validate_and_retry  # 기존 데이터 재검증 + 누락 재생성"
     echo "  $0 --no-retry        # 재생성 비활성화"
     echo ""
     echo "tmux 세션 관리:"
@@ -91,7 +92,7 @@ show_help() {
 
 USE_TMUX=true
 GENERATE_ONLY=false
-VALIDATE_ONLY=false
+VALIDATE_AND_RETRY=false
 ENABLE_RETRY=true
 
 while [[ $# -gt 0 ]]; do
@@ -104,8 +105,8 @@ while [[ $# -gt 0 ]]; do
             GENERATE_ONLY=true
             shift
             ;;
-        --validate_only)
-            VALIDATE_ONLY=true
+        --validate_and_retry)
+            VALIDATE_AND_RETRY=true
             shift
             ;;
         --merge_only)
@@ -144,6 +145,9 @@ echo "vLLM 서버: $BASE_URL"
 echo "모델: $MODEL"
 echo "tmux 사용: $USE_TMUX"
 echo "자동 재생성: $ENABLE_RETRY (최대 ${MAX_RETRY}회)"
+if [ "$VALIDATE_AND_RETRY" = true ]; then
+    echo "모드: 재검증 + 누락 재생성"
+fi
 if [ -n "$INPUT_FILE" ]; then
     echo "입력 파일: $INPUT_FILE"
 fi
@@ -199,11 +203,11 @@ build_generate_cmd() {
 
 build_watcher_cmd() {
     local EXTRA_ARGS=""
-    # validate_only 모드에서는 기존 validated를 신뢰하지 않고 전체 재검증/재집계
-    if [ \"$VALIDATE_ONLY\" = true ]; then
-        EXTRA_ARGS=\"--rescan\"
+    # validate_and_retry 모드에서는 기존 validated를 신뢰하지 않고 전체 재검증/재집계
+    if [ "$VALIDATE_AND_RETRY" = true ]; then
+        EXTRA_ARGS="--rescan"
     fi
-    echo \"python validate_watcher.py \\
+    echo "python validate_watcher.py \
         --watch_dirs $OUTPUT_DIR \
         --output_dir $OUTPUT_DIR \
         --interval 2.0 \
@@ -212,7 +216,7 @@ build_watcher_cmd() {
         --expected_n $N \
         --dashboard_interval 10 \
         --status_file $STATUS_FILE \
-        $EXTRA_ARGS\"
+        $EXTRA_ARGS"
 }
 
 # ============================================================================
@@ -222,12 +226,23 @@ build_watcher_cmd() {
 run_sequential() {
     local RETRY_COUNT=0
     local RETRY_FILE=""
+    local SKIP_GENERATE=false
+    
+    # validate_and_retry 모드: 첫 번째 반복에서는 생성 스킵
+    if [ "$VALIDATE_AND_RETRY" = true ]; then
+        SKIP_GENERATE=true
+        echo ""
+        echo "========================================"
+        echo "재검증 모드: 기존 데이터 검증 후 누락 문제 재생성"
+        echo "========================================"
+    fi
     
     while true; do
         # 종료 파일 삭제
         rm -f "$STOP_FILE"
         
-        if [ "$VALIDATE_ONLY" = false ]; then
+        # 생성 단계 (SKIP_GENERATE가 false일 때만 실행)
+        if [ "$SKIP_GENERATE" = false ] && [ "$GENERATE_ONLY" = false ] || [ "$SKIP_GENERATE" = false ] && [ $RETRY_COUNT -gt 0 ]; then
             echo ""
             echo "========================================"
             if [ $RETRY_COUNT -eq 0 ]; then
@@ -248,7 +263,11 @@ run_sequential() {
         if [ "$GENERATE_ONLY" = false ]; then
             echo ""
             echo "========================================"
-            echo "2단계: 정답 검증 및 필터링"
+            if [ "$VALIDATE_AND_RETRY" = true ] && [ $RETRY_COUNT -eq 0 ]; then
+                echo "기존 데이터 재검증 (rescan 모드)"
+            else
+                echo "2단계: 정답 검증 및 필터링"
+            fi
             echo "========================================"
             
             # Watcher로 검증 (재생성 큐 생성)
@@ -273,6 +292,20 @@ run_sequential() {
         if [ ! -f "$RETRY_QUEUE" ]; then
             echo "모든 문제에 정답 있음. 완료!"
             break
+        fi
+        
+        # validate_and_retry 모드에서 누락 발견 시 재생성 루프로 전환
+        if [ "$VALIDATE_AND_RETRY" = true ] && [ "$SKIP_GENERATE" = true ]; then
+            echo ""
+            echo "========================================"
+            echo "⚠️  누락된 문제 발견! 재생성을 시작합니다."
+            echo "========================================"
+            cat "$RETRY_QUEUE"
+            echo ""
+            SKIP_GENERATE=false  # 이후부터는 생성 허용
+            RETRY_FILE="$RETRY_QUEUE"
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            continue
         fi
         
         RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -317,12 +350,37 @@ run_with_tmux() {
         tmux kill-session -t "$TMUX_SESSION"
     fi
     
-    if [ "$VALIDATE_ONLY" = true ]; then
-        echo "검증만 수행 모드"
+    # validate_and_retry 모드: 먼저 검증 실행 후 누락 있으면 재생성 루프로 진입
+    if [ "$VALIDATE_AND_RETRY" = true ]; then
+        echo ""
+        echo "========================================"
+        echo "재검증 모드: 기존 데이터 검증 후 누락 문제 재생성"
+        echo "========================================"
+        
+        # 먼저 검증 실행 (rescan 모드)
+        echo "1단계: 기존 데이터 재검증..."
         WATCHER_CMD=$(build_watcher_cmd)
         echo "실행: $WATCHER_CMD"
+        touch "$STOP_FILE"  # 즉시 종료 신호
         eval $WATCHER_CMD
-        return
+        
+        # retry_queue가 없으면 완료
+        if [ ! -f "$RETRY_QUEUE" ]; then
+            echo ""
+            echo "모든 문제에 정답 있음. 완료!"
+            return
+        fi
+        
+        echo ""
+        echo "========================================"
+        echo "⚠️  누락된 문제 발견! 재생성을 시작합니다."
+        echo "========================================"
+        cat "$RETRY_QUEUE"
+        echo ""
+        
+        # validate_and_retry 비활성화하고 일반 모드로 진입
+        VALIDATE_AND_RETRY=false
+        # 아래 일반 tmux 루프로 계속 진행
     fi
     
     # 재생성 스크립트 생성 (tmux에서 실행)
