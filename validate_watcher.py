@@ -546,25 +546,81 @@ class ValidateWatcher:
         print(f"  - 오답: {self.stats['incorrect']}")
         print(f"{'='*50}")
     
-    def _find_problems_needing_retry(self) -> list:
-        """정답이 0개인 문제 목록 반환 (validated 폴더 기준으로 실제 확인)"""
-        problems_needing_retry = []
+    def _find_all_sources(self) -> List[str]:
+        """output 폴더에서 모든 source (연도_math) 목록을 찾음"""
+        sources = set()
         
-        for (source, question_type, problem_idx), stats in self.problem_stats.items():
-            # 생성이 완료된 문제인지 확인
-            if stats["generated"] < self.expected_n:
-                continue
-            
-            # validated 폴더에 실제로 파일이 있는지 확인
-            has_validated = self._check_validated_exists(source, question_type, problem_idx)
-            
-            if not has_validated:
-                problems_needing_retry.append({
-                    "source": source,
-                    "problem_idx": problem_idx,
-                    "question_type": question_type,
-                    "total_generated": stats["generated"]
-                })
+        # base_output_dir 아래의 디렉토리 중 subjectives 또는 multiples를 가진 것 찾기
+        if not os.path.exists(self.base_output_dir):
+            return []
+        
+        for item in os.listdir(self.base_output_dir):
+            item_path = os.path.join(self.base_output_dir, item)
+            if os.path.isdir(item_path) and not item.startswith('.'):
+                # subjectives 또는 multiples 폴더가 있으면 source로 인정
+                if (os.path.exists(os.path.join(item_path, "subjectives")) or 
+                    os.path.exists(os.path.join(item_path, "multiples"))):
+                    sources.add(item)
+        
+        return sorted(sources)
+    
+    def _find_problems_needing_retry(self) -> list:
+        """
+        정답이 0개인 문제 목록 반환
+        
+        로직:
+        1. output 폴더에서 모든 source를 찾음
+        2. 각 source에 대해 주관식/객관식 0~45번 문제를 확인
+        3. validated 폴더에 정답 파일이 하나라도 있는지 확인
+        4. 없으면 재생성 대상에 추가
+        """
+        problems_needing_retry = []
+        sources = self._find_all_sources()
+        
+        # 수능 수학 문제 수 (22문제 객관식 + 8문제 단답형, 공통과목 기준)
+        # 실제로는 0~29번까지 30문제이지만, 안전하게 46개까지 확인
+        EXPECTED_PROBLEM_COUNT = 46
+        
+        for source in sources:
+            for question_type in ["subjectives", "multiples"]:
+                # 해당 폴더가 존재하는지 확인
+                source_qtype_dir = os.path.join(self.base_output_dir, source, question_type)
+                if not os.path.exists(source_qtype_dir):
+                    continue
+                
+                # 실제 생성된 문제 번호 파악 (원본 폴더 기준)
+                generated_problems = set()
+                for fname in os.listdir(source_qtype_dir):
+                    match = re.match(r"(\d+)_\d+\.jsonl$", fname)
+                    if match:
+                        generated_problems.add(int(match.group(1)))
+                
+                if not generated_problems:
+                    continue
+                
+                # 생성된 각 문제에 대해 validated 확인
+                max_problem_idx = max(generated_problems)
+                for problem_idx in range(max_problem_idx + 1):
+                    # 원본이 없으면 건너뜀 (해당 문제가 원래 없는 경우)
+                    if problem_idx not in generated_problems:
+                        # 만약 expected_n만큼 생성되어야 하는데 아예 없으면 문제
+                        # 하지만 원본 데이터에 해당 문제가 없을 수도 있으므로 건너뜀
+                        continue
+                    
+                    # validated 폴더에 정답이 있는지 확인
+                    has_validated = self._check_validated_exists(source, question_type, problem_idx)
+                    
+                    if not has_validated:
+                        # 해당 문제에 대해 생성된 파일 수 확인
+                        generated_count = sum(1 for f in os.listdir(source_qtype_dir) 
+                                              if f.startswith(f"{problem_idx}_") and f.endswith(".jsonl"))
+                        
+                        problems_needing_retry.append({
+                            "source": source,
+                            "problem_idx": problem_idx,
+                            "question_type": question_type,
+                            "total_generated": generated_count
+                        })
         
         return problems_needing_retry
     
