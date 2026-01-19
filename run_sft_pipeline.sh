@@ -70,7 +70,7 @@ N=10
 # 동시 워커 수 (병렬 요청 수)
 # - vLLM 서버에 동시에 보내는 요청 수
 # - 서버 성능에 맞게 조절 (너무 높으면 OOM 발생 가능)
-WORKER=20
+WORKER=200
 
 # 출력 형식
 # - simple:   {"problem": ..., "solution": ..., "answer": ...}
@@ -100,6 +100,30 @@ TMUX_SESSION="sft_pipeline"
 # - true: 생성 없이 기존 결과만 병합
 # - false: 생성 + 검증 + 병합 모두 수행
 MERGE_ONLY=false
+
+# ----------------------------------------------------------------------------
+# 🚀 실행 모드 설정
+# ----------------------------------------------------------------------------
+
+# tmux 사용 여부 (true/false)
+# - true: tmux에서 생성+검증 병렬 실행 (권장)
+# - false: 순차 실행 (디버깅용)
+USE_TMUX=true
+
+# 생성만 수행 (true/false)
+# - true: 검증 없이 생성만 수행
+# - false: 생성 + 검증 모두 수행
+GENERATE_ONLY=false
+
+# 재검증 모드 (true/false)
+# - false: 전체 생성 + 검증 + 자동 재생성 (기본 모드)
+# - true: 기존 데이터 검증 후 빠진 문제만 재생성 (재검증 모드)
+VALIDATE_AND_RETRY=false
+
+# 자동 재생성 활성화 (true/false)
+# - true: 정답 0개인 문제 자동 재생성 (최대 MAX_RETRY 회)
+# - false: 재생성 비활성화
+ENABLE_RETRY=true
 
 # ============================================================================
 # 도움말
@@ -137,13 +161,8 @@ show_help() {
 }
 
 # ============================================================================
-# 인자 파싱
+# 인자 파싱 (명령줄 인자로 설정값 덮어쓰기)
 # ============================================================================
-
-USE_TMUX=true
-GENERATE_ONLY=false
-VALIDATE_AND_RETRY=false
-ENABLE_RETRY=true
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -433,6 +452,12 @@ run_with_tmux() {
         # 아래 일반 tmux 루프로 계속 진행
     fi
     
+    # validate_and_retry 모드에서 사용할 초기 retry 파일
+    INITIAL_RETRY_FILE=""
+    if [ -f "$RETRY_QUEUE" ]; then
+        INITIAL_RETRY_FILE="$RETRY_QUEUE"
+    fi
+    
     # 재생성 스크립트 생성 (tmux에서 실행)
     RETRY_SCRIPT="$OUTPUT_DIR/.retry_loop.sh"
     cat > "$RETRY_SCRIPT" << 'RETRY_SCRIPT_EOF'
@@ -448,9 +473,17 @@ INPUT_FILE="$8"
 MAX_RETRY="$9"
 STOP_FILE="${10}"
 RETRY_QUEUE="${11}"
+INITIAL_RETRY_FILE="${12}"  # 초기 retry 파일 (validate_and_retry 모드용)
 
 RETRY_COUNT=0
 RETRY_FILE=""
+
+# 초기 retry 파일이 있으면 사용 (validate_and_retry 모드)
+if [ -n "$INITIAL_RETRY_FILE" ] && [ -f "$INITIAL_RETRY_FILE" ]; then
+    RETRY_FILE="$INITIAL_RETRY_FILE"
+    RETRY_COUNT=1  # 이미 검증된 상태이므로 재생성 카운트 시작
+    echo "재검증 모드: 기존 retry_queue 사용"
+fi
 
 while true; do
     rm -f "$STOP_FILE"
@@ -459,8 +492,10 @@ while true; do
     echo "========================================"
     if [ $RETRY_COUNT -eq 0 ]; then
         echo "=== Generator (데이터 생성) ==="
-    else
+    elif [ -n "$RETRY_FILE" ]; then
         echo "=== 재생성 시도 ${RETRY_COUNT}/${MAX_RETRY} ==="
+    else
+        echo "=== Generator (데이터 생성) ==="
     fi
     echo "========================================"
     
@@ -574,7 +609,7 @@ WATCHER_SCRIPT_EOF
     
     # 오른쪽 pane: Generator (재생성 루프)
     tmux split-window -h -t "$TMUX_SESSION:0"
-    tmux send-keys -t "$TMUX_SESSION:0.1" "$RETRY_SCRIPT '$OUTPUT_DIR' '$DATA_DIR' '$N' '$WORKER' '$FORMAT' '$BASE_URL' '$MODEL' '$INPUT_FILE' '$MAX_RETRY' '$STOP_FILE' '$RETRY_QUEUE'" C-m
+    tmux send-keys -t "$TMUX_SESSION:0.1" "$RETRY_SCRIPT '$OUTPUT_DIR' '$DATA_DIR' '$N' '$WORKER' '$FORMAT' '$BASE_URL' '$MODEL' '$INPUT_FILE' '$MAX_RETRY' '$STOP_FILE' '$RETRY_QUEUE' '$INITIAL_RETRY_FILE'" C-m
     
     echo "========================================"
     echo "파이프라인이 백그라운드에서 실행 중입니다."
