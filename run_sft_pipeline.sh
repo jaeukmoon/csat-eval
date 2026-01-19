@@ -297,13 +297,30 @@ run_sequential() {
     local RETRY_FILE=""
     local SKIP_GENERATE=false
     
-    # validate_and_retry 모드: 첫 번째 반복에서는 생성 스킵
+    # validate_and_retry 모드: 대시보드 출력 후 재생성 대상 파악
     if [ "$VALIDATE_AND_RETRY" = true ]; then
         SKIP_GENERATE=true
         echo ""
         echo "========================================"
         echo "재검증 모드: 기존 데이터 검증 후 누락 문제 재생성"
         echo "========================================"
+        
+        # 대시보드로 현재 상태 확인 및 retry_queue 생성
+        echo ""
+        echo "1단계: 현재 상태 확인 및 재생성 대상 파악..."
+        echo ""
+        python check_status.py --output_dir "$OUTPUT_DIR" --expected_n "$N" --save_retry
+        
+        # retry_queue가 없으면 완료
+        if [ ! -f "$RETRY_QUEUE" ]; then
+            echo ""
+            echo "✅ 모든 문제에 정답 있음. 완료!"
+            return
+        fi
+        
+        # retry_queue가 있으면 재생성 시작
+        RETRY_FILE="$RETRY_QUEUE"
+        RETRY_COUNT=1
     fi
     
     while true; do
@@ -419,24 +436,23 @@ run_with_tmux() {
         tmux kill-session -t "$TMUX_SESSION"
     fi
     
-    # validate_and_retry 모드: 먼저 검증 실행 후 누락 있으면 재생성 루프로 진입
+    # validate_and_retry 모드: 대시보드 출력 후 누락 문제 재생성
     if [ "$VALIDATE_AND_RETRY" = true ]; then
         echo ""
         echo "========================================"
         echo "재검증 모드: 기존 데이터 검증 후 누락 문제 재생성"
         echo "========================================"
         
-        # 먼저 검증 실행 (rescan 모드)
-        echo "1단계: 기존 데이터 재검증..."
-        WATCHER_CMD=$(build_watcher_cmd)
-        echo "실행: $WATCHER_CMD"
-        touch "$STOP_FILE"  # 즉시 종료 신호
-        eval $WATCHER_CMD
+        # 1단계: 대시보드로 현재 상태 확인 및 retry_queue 생성
+        echo ""
+        echo "1단계: 현재 상태 확인 및 재생성 대상 파악..."
+        echo ""
+        python check_status.py --output_dir "$OUTPUT_DIR" --expected_n "$N" --save_retry
         
         # retry_queue가 없으면 완료
         if [ ! -f "$RETRY_QUEUE" ]; then
             echo ""
-            echo "모든 문제에 정답 있음. 완료!"
+            echo "✅ 모든 문제에 정답 있음. 완료!"
             return
         fi
         
@@ -444,6 +460,8 @@ run_with_tmux() {
         echo "========================================"
         echo "⚠️  누락된 문제 발견! 재생성을 시작합니다."
         echo "========================================"
+        echo ""
+        echo "재생성 대상:"
         cat "$RETRY_QUEUE"
         echo ""
         
