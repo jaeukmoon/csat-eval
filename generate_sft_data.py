@@ -373,8 +373,15 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
         print(f"[{problem_idx}_{gen_idx}] FAILED after {MAX_RETRIES} retries")
         return None
     
-    # 응답 추출
-    solution = resp.choices[0].message.content
+    # 응답 추출 (reasoning_content가 있으면 <think> 태그로 감싸서 포함)
+    resp_dict = resp.choices[0].to_dict()
+    message = resp_dict.get("message", {})
+    
+    if message.get("reasoning_content"):
+        solution = f"<think>\n{message['reasoning_content'].strip()}\n</think>\n{message['content'].strip()}"
+    else:
+        solution = message.get("content", "")
+    
     answer = item.get('answer', None)
     
     # 주관식 버전이면서 원본이 객관식인 경우, 실제 답 값을 추출
