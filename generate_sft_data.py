@@ -1,6 +1,11 @@
 """
 SFT 학습 데이터 생성 스크립트
 수학 수능 문제에 대한 풀이를 vLLM으로 생성하여 SFT 학습 데이터를 만듭니다.
+
+사용법:
+    python generate_sft_data.py [옵션]
+    
+    또는 run_sft_pipeline.sh를 통해 실행 (권장)
 """
 import os
 import re
@@ -13,7 +18,55 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 
-# no_proxy 설정 (vLLM 서버 주소)
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    🔧 기본 설정 (필요시 수정)                            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# ----------------------------------------------------------------------------
+# 📁 경로 설정
+# ----------------------------------------------------------------------------
+
+# 입력 데이터 디렉토리 (기본값)
+# - *_math.jsonl 파일과 sentences_ask_boxed.jsonl이 있는 폴더
+DEFAULT_DATA_DIR = "./data"
+
+# 출력 디렉토리 (기본값)  
+# - 생성된 SFT 데이터가 저장되는 폴더
+DEFAULT_OUTPUT_DIR = "./sft_output"
+
+# ----------------------------------------------------------------------------
+# 🤖 vLLM 서버 설정
+# ----------------------------------------------------------------------------
+
+# vLLM API 서버 URL (기본값)
+DEFAULT_BASE_URL = "http://10.0.74.208:8000/v1"
+
+# 사용할 모델 이름 (기본값)
+DEFAULT_MODEL = "glm-4.7"
+
+# ----------------------------------------------------------------------------
+# ⚙️ 생성 설정
+# ----------------------------------------------------------------------------
+
+# 문제당 생성 횟수 (기본값)
+# - 각 문제에 대해 몇 번 풀이를 생성할지
+DEFAULT_N = 10
+
+# 동시 워커 수 (기본값)
+# - vLLM 서버에 동시에 보내는 요청 수
+DEFAULT_WORKER = 20
+
+# 출력 형식 (기본값)
+# - simple:   {"problem": ..., "solution": ..., "answer": ...}
+# - sharegpt: {"messages": [{"role": "user", ...}, {"role": "assistant", ...}]}  
+# - alpaca:   {"instruction": ..., "input": ..., "output": ...}
+DEFAULT_FORMAT = "simple"
+
+# ----------------------------------------------------------------------------
+# 🌐 네트워크 설정
+# ----------------------------------------------------------------------------
+
+# no_proxy 설정 (vLLM 서버 주소 - 프록시 우회)
 os.environ["no_proxy"] = "localhost,127.0.0.1,10.0.74.208"
 
 # ============================================================================
@@ -437,29 +490,46 @@ def find_math_files(data_dir: str) -> list:
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description="SFT 학습 데이터 생성기")
-    parser.add_argument("--data_dir", default="./data", type=str,
-                        help="수학 데이터가 있는 디렉토리")
-    parser.add_argument("--output_dir", default="./sft_output", type=str,
-                        help="출력 디렉토리")
-    parser.add_argument("--n", default=10, type=int,
-                        help="문제당 생성 횟수")
-    parser.add_argument("--worker", default=20, type=int,
-                        help="동시 워커 수")
-    parser.add_argument("--format", default="simple", type=str,
+    parser = argparse.ArgumentParser(
+        description="SFT 학습 데이터 생성기",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+예시:
+  python generate_sft_data.py
+  python generate_sft_data.py --n 20 --worker 40
+  python generate_sft_data.py --input_file ./data/2025_math.jsonl
+  python generate_sft_data.py --retry_file ./sft_output/.retry_queue.jsonl
+        """
+    )
+    
+    # 경로 설정
+    parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR, type=str,
+                        help=f"입력 데이터 디렉토리 (기본: {DEFAULT_DATA_DIR})")
+    parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR, type=str,
+                        help=f"출력 디렉토리 (기본: {DEFAULT_OUTPUT_DIR})")
+    parser.add_argument("--input_file", type=str, default=None,
+                        help="특정 파일만 처리 (미지정시 data_dir 내 모든 *_math.jsonl 처리)")
+    
+    # 생성 설정
+    parser.add_argument("--n", default=DEFAULT_N, type=int,
+                        help=f"문제당 생성 횟수 (기본: {DEFAULT_N})")
+    parser.add_argument("--worker", default=DEFAULT_WORKER, type=int,
+                        help=f"동시 워커 수 (기본: {DEFAULT_WORKER})")
+    parser.add_argument("--format", default=DEFAULT_FORMAT, type=str,
                         choices=["simple", "sharegpt", "alpaca"],
-                        help="출력 형식")
-    parser.add_argument("--base_url", 
-                        default="http://10.0.74.208:8000/v1",
-                        type=str, help="vLLM 서버 URL")
-    parser.add_argument("--model", default="glm-4.7", type=str,
-                        help="모델 이름")
+                        help=f"출력 형식 (기본: {DEFAULT_FORMAT})")
+    
+    # vLLM 서버 설정
+    parser.add_argument("--base_url", default=DEFAULT_BASE_URL, type=str,
+                        help=f"vLLM 서버 URL (기본: {DEFAULT_BASE_URL})")
+    parser.add_argument("--model", default=DEFAULT_MODEL, type=str,
+                        help=f"모델 이름 (기본: {DEFAULT_MODEL})")
+    
+    # 실행 모드
     parser.add_argument("--merge_only", action="store_true",
                         help="생성 없이 기존 결과만 병합")
-    parser.add_argument("--input_file", type=str, default=None,
-                        help="특정 파일만 처리 (지정하지 않으면 모든 수학 파일 처리)")
     parser.add_argument("--retry_file", type=str, default=None,
-                        help="재생성할 문제 목록 파일 (retry_queue.jsonl)")
+                        help="재생성할 문제 목록 파일 경로 (.retry_queue.jsonl)")
     
     args = parser.parse_args()
     
@@ -512,13 +582,17 @@ def main():
             mc_count = sum(1 for p in problems if is_multiple_choice(p['problem']))
             print(f"  - 객관식 문제: {mc_count}개, 주관식 문제: {len(problems) - mc_count}개")
             
-            # 주관식 버전 생성 (subjectives)
+            # 출력 디렉토리 준비
             subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
+            mc_output_dir = os.path.join(args.output_dir, source, "multiples")
             os.makedirs(subj_output_dir, exist_ok=True)
+            os.makedirs(mc_output_dir, exist_ok=True)
             result_dirs.append(subj_output_dir)
+            result_dirs.append(mc_output_dir)
             
             # 재생성할 문제 목록 확인
             subj_retry = retry_queue.get((source, "subjectives"), None)
+            mc_retry = retry_queue.get((source, "multiples"), None)
             
             # 재생성 모드일 경우 기존 파일 삭제
             if subj_retry:
@@ -530,7 +604,66 @@ def main():
                             os.remove(old_file)
                             print(f"  삭제: {old_file}")
             
-            if subj_retry or not retry_queue:
+            if mc_retry:
+                print(f"\n[객관식 재생성] 문제 {mc_retry} 기존 파일 삭제 중...")
+                for problem_idx in mc_retry:
+                    for gen_idx in range(args.n):
+                        old_file = os.path.join(mc_output_dir, f"{problem_idx}_{gen_idx}.jsonl")
+                        if os.path.exists(old_file):
+                            os.remove(old_file)
+                            print(f"  삭제: {old_file}")
+            
+            # 생성할 타입 결정
+            run_subj = subj_retry or not retry_queue
+            run_mc = mc_retry or not retry_queue
+            
+            # 워커 분배: 둘 다 실행하면 반반, 하나만이면 전체 사용
+            if run_subj and run_mc:
+                # 🔀 주관식/객관식 동시 생성 (워커 반반 분배)
+                subj_workers = args.worker // 2
+                mc_workers = args.worker - subj_workers  # 홀수일 경우 객관식에 +1
+                
+                print(f"\n[동시 생성 모드] 주관식 워커: {subj_workers}, 객관식 워커: {mc_workers}")
+                print(f"  - 주관식: {len(subj_retry) if subj_retry else len(problems)}개 문제")
+                print(f"  - 객관식: {len(mc_retry) if mc_retry else len(problems)}개 문제")
+                
+                # 두 생성 작업을 동시에 실행
+                with ThreadPoolExecutor(max_workers=2) as type_executor:
+                    subj_future = type_executor.submit(
+                        run_generation,
+                        problems=problems,
+                        request_sentences=request_sentences,
+                        output_dir=subj_output_dir,
+                        base_url=args.base_url,
+                        model=args.model,
+                        source=source,
+                        format_type=args.format,
+                        n=args.n,
+                        max_workers=subj_workers,
+                        question_type="subjectives",
+                        retry_problems=subj_retry
+                    )
+                    mc_future = type_executor.submit(
+                        run_generation,
+                        problems=problems,
+                        request_sentences=request_sentences,
+                        output_dir=mc_output_dir,
+                        base_url=args.base_url,
+                        model=args.model,
+                        source=source,
+                        format_type=args.format,
+                        n=args.n,
+                        max_workers=mc_workers,
+                        question_type="multiples",
+                        retry_problems=mc_retry
+                    )
+                    
+                    # 완료 대기
+                    subj_future.result()
+                    mc_future.result()
+                    
+            elif run_subj:
+                # 주관식만 생성 (전체 워커 사용)
                 print(f"\n[주관식 버전 생성 시작] ({len(subj_retry) if subj_retry else len(problems)}개 문제)")
                 run_generation(
                     problems=problems,
@@ -545,26 +678,9 @@ def main():
                     question_type="subjectives",
                     retry_problems=subj_retry
                 )
-            
-            # 객관식 버전 생성 (multiples)
-            mc_output_dir = os.path.join(args.output_dir, source, "multiples")
-            os.makedirs(mc_output_dir, exist_ok=True)
-            result_dirs.append(mc_output_dir)
-            
-            # 재생성할 문제 목록 확인
-            mc_retry = retry_queue.get((source, "multiples"), None)
-            
-            # 재생성 모드일 경우 기존 파일 삭제
-            if mc_retry:
-                print(f"\n[객관식 재생성] 문제 {mc_retry} 기존 파일 삭제 중...")
-                for problem_idx in mc_retry:
-                    for gen_idx in range(args.n):
-                        old_file = os.path.join(mc_output_dir, f"{problem_idx}_{gen_idx}.jsonl")
-                        if os.path.exists(old_file):
-                            os.remove(old_file)
-                            print(f"  삭제: {old_file}")
-            
-            if mc_retry or not retry_queue:
+                
+            elif run_mc:
+                # 객관식만 생성 (전체 워커 사용)
                 print(f"\n[객관식 버전 생성 시작] ({len(mc_retry) if mc_retry else len(problems)}개 문제)")
                 run_generation(
                     problems=problems,
