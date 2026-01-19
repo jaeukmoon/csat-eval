@@ -475,6 +475,17 @@ STOP_FILE="${10}"
 RETRY_QUEUE="${11}"
 INITIAL_RETRY_FILE="${12}"  # 초기 retry 파일 (validate_and_retry 모드용)
 
+# 디버그: 전달된 인자 확인
+echo "=== Generator 시작 ==="
+echo "OUTPUT_DIR: $OUTPUT_DIR"
+echo "DATA_DIR: $DATA_DIR"
+echo "N: $N"
+echo "WORKER: $WORKER"
+echo "MAX_RETRY: $MAX_RETRY"
+echo "RETRY_QUEUE: $RETRY_QUEUE"
+echo "INITIAL_RETRY_FILE: $INITIAL_RETRY_FILE"
+echo ""
+
 RETRY_COUNT=0
 RETRY_FILE=""
 
@@ -483,6 +494,11 @@ if [ -n "$INITIAL_RETRY_FILE" ] && [ -f "$INITIAL_RETRY_FILE" ]; then
     RETRY_FILE="$INITIAL_RETRY_FILE"
     RETRY_COUNT=1  # 이미 검증된 상태이므로 재생성 카운트 시작
     echo "재검증 모드: 기존 retry_queue 사용"
+    echo "RETRY_FILE 내용:"
+    cat "$RETRY_FILE"
+    echo ""
+elif [ -n "$INITIAL_RETRY_FILE" ]; then
+    echo "경고: INITIAL_RETRY_FILE이 설정되었지만 파일이 존재하지 않음: $INITIAL_RETRY_FILE"
 fi
 
 while true; do
@@ -558,6 +574,12 @@ echo "========================================"
 RETRY_SCRIPT_EOF
     chmod +x "$RETRY_SCRIPT"
     
+    # validate_and_retry 모드에서 watcher에 전달할 rescan 플래그
+    WATCHER_RESCAN="false"
+    if [ -f "$RETRY_QUEUE" ]; then
+        WATCHER_RESCAN="true"
+    fi
+    
     # Watcher 재시작 스크립트
     WATCHER_SCRIPT="$OUTPUT_DIR/.watcher_loop.sh"
     cat > "$WATCHER_SCRIPT" << 'WATCHER_SCRIPT_EOF'
@@ -567,22 +589,40 @@ N="$2"
 STOP_FILE="$3"
 RETRY_QUEUE="$4"
 STATUS_FILE="$5"
+RESCAN="$6"
 
 echo "=== Watcher (실시간 검증) ==="
 echo "재생성 루프 지원 모드"
 echo "상태 파일: $STATUS_FILE"
+echo "Rescan 모드: $RESCAN"
 echo ""
 
 while true; do
-    python validate_watcher.py \
-        --watch_dirs "$OUTPUT_DIR" \
-        --output_dir "$OUTPUT_DIR" \
-        --interval 2.0 \
-        --stop_file "$STOP_FILE" \
-        --retry_queue "$RETRY_QUEUE" \
-        --expected_n "$N" \
-        --dashboard_interval 10 \
-        --status_file "$STATUS_FILE"
+    if [ "$RESCAN" = "true" ]; then
+        python validate_watcher.py \
+            --watch_dirs "$OUTPUT_DIR" \
+            --output_dir "$OUTPUT_DIR" \
+            --interval 2.0 \
+            --stop_file "$STOP_FILE" \
+            --retry_queue "$RETRY_QUEUE" \
+            --expected_n "$N" \
+            --dashboard_interval 10 \
+            --status_file "$STATUS_FILE" \
+            --rescan
+    else
+        python validate_watcher.py \
+            --watch_dirs "$OUTPUT_DIR" \
+            --output_dir "$OUTPUT_DIR" \
+            --interval 2.0 \
+            --stop_file "$STOP_FILE" \
+            --retry_queue "$RETRY_QUEUE" \
+            --expected_n "$N" \
+            --dashboard_interval 10 \
+            --status_file "$STATUS_FILE"
+    fi
+    
+    # 첫 번째 실행 후에는 rescan 비활성화 (이미 초기화됨)
+    RESCAN="false"
     
     # 재생성 큐가 있고 종료 파일이 있으면 재시작 대기
     if [ -f "$RETRY_QUEUE" ]; then
@@ -604,8 +644,8 @@ WATCHER_SCRIPT_EOF
     
     tmux new-session -d -s "$TMUX_SESSION" -n "pipeline"
     
-    # 왼쪽 pane: Watcher
-    tmux send-keys -t "$TMUX_SESSION:0" "$WATCHER_SCRIPT '$OUTPUT_DIR' '$N' '$STOP_FILE' '$RETRY_QUEUE' '$STATUS_FILE'" C-m
+    # 왼쪽 pane: Watcher (6번째 인자: RESCAN 플래그)
+    tmux send-keys -t "$TMUX_SESSION:0" "$WATCHER_SCRIPT '$OUTPUT_DIR' '$N' '$STOP_FILE' '$RETRY_QUEUE' '$STATUS_FILE' '$WATCHER_RESCAN'" C-m
     
     # 오른쪽 pane: Generator (재생성 루프)
     tmux split-window -h -t "$TMUX_SESSION:0"
