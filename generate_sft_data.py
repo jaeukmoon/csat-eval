@@ -1,11 +1,11 @@
 """
-SFT ?�습 ?�이???�성 ?�크립트
-?�학 ?�능 문제???�???�?��? vLLM?�로 ?�성?�여 SFT ?�습 ?�이?��? 만듭?�다.
+SFT 학습 데이터 생성 스크립트
+수학 수능 문제에 대한 풀이를 vLLM으로 생성하여 SFT 학습 데이터를 만듭니다.
 
-?�용�?
-    python generate_sft_data.py [?�션]
+사용법:
+    python generate_sft_data.py [옵션]
     
-    ?�는 run_sft_pipeline.sh�??�해 ?�행 (권장)
+    또는 run_sft_pipeline.sh를 통해 실행 (권장)
 """
 import os
 import re
@@ -18,61 +18,63 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 
-# ?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�╗
-# ??                   ?�� 기본 ?�정 (?�요???�정)                            ??# ?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�╝
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                    🔧 기본 설정 (필요시 수정)                            ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ----------------------------------------------------------------------------
-# ?�� 경로 ?�정
+# 📁 경로 설정
 # ----------------------------------------------------------------------------
 
-# ?�력 ?�이???�렉?�리 (기본�?
-# - *_math.jsonl ?�일�?sentences_ask_boxed_kr.jsonl???�는 ?�더
+# 입력 데이터 디렉토리 (기본값)
+# - *_math.jsonl 파일과 sentences_ask_boxed.jsonl이 있는 폴더
 DEFAULT_DATA_DIR = "./data"
 
-# 출력 ?�렉?�리 (기본�?  
-# - ?�성??SFT ?�이?��? ?�?�되???�더
+# 출력 디렉토리 (기본값)  
+# - 생성된 SFT 데이터가 저장되는 폴더
 DEFAULT_OUTPUT_DIR = "./sft_output"
 
 # ----------------------------------------------------------------------------
-# ?�� vLLM ?�버 ?�정
+# 🤖 vLLM 서버 설정
 # ----------------------------------------------------------------------------
 
-# vLLM API ?�버 URL (기본�?
+# vLLM API 서버 URL (기본값)
 DEFAULT_BASE_URL = "http://10.0.74.208:8000/v1"
 
-# ?�용??모델 ?�름 (기본�?
+# 사용할 모델 이름 (기본값)
 DEFAULT_MODEL = "glm-4.7"
 
 # ----------------------------------------------------------------------------
-# ?�️ ?�성 ?�정
+# ⚙️ 생성 설정
 # ----------------------------------------------------------------------------
 
-# 문제???�성 ?�수 (기본�?
-# - �?문제???�??�?�??�?��? ?�성?��?
+# 문제당 생성 횟수 (기본값)
+# - 각 문제에 대해 몇 번 풀이를 생성할지
 DEFAULT_N = 10
 
-# ?�시 ?�커 ??(기본�?
-# - vLLM ?�버???�시??보내???�청 ??DEFAULT_WORKER = 20
+# 동시 워커 수 (기본값)
+# - vLLM 서버에 동시에 보내는 요청 수
+DEFAULT_WORKER = 20
 
-# 출력 ?�식 (기본�?
+# 출력 형식 (기본값)
 # - simple:   {"problem": ..., "solution": ..., "answer": ...}
 # - sharegpt: {"messages": [{"role": "user", ...}, {"role": "assistant", ...}]}  
 # - alpaca:   {"instruction": ..., "input": ..., "output": ...}
 DEFAULT_FORMAT = "simple"
 
 # ----------------------------------------------------------------------------
-# ?�� ?�트?�크 ?�정
+# 🌐 네트워크 설정
 # ----------------------------------------------------------------------------
 
-# no_proxy ?�정 (vLLM ?�버 주소 - ?�록???�회)
+# no_proxy 설정 (vLLM 서버 주소 - 프록시 우회)
 os.environ["no_proxy"] = "localhost,127.0.0.1,10.0.74.208"
 
 # ============================================================================
-# ?�틸리티 ?�수
+# 유틸리티 함수
 # ============================================================================
 
 def open_jsonl(path):
-    """JSONL ?�일???�어 리스?�로 반환"""
+    """JSONL 파일을 읽어 리스트로 반환"""
     data = []
     with open(path, mode='r', encoding='utf8') as rf:
         for line in rf:
@@ -83,7 +85,7 @@ def open_jsonl(path):
 
 
 def to_jsonl(out_path, data):
-    """?�이?��? JSONL ?�식?�로 ?�??""
+    """데이터를 JSONL 형식으로 저장"""
     with open(out_path, mode='w', encoding='utf8') as wf:
         for row in data:
             wf.write(json.dumps(row, ensure_ascii=False))
@@ -91,19 +93,19 @@ def to_jsonl(out_path, data):
 
 
 def append_jsonl(out_path, row):
-    """?�일 ??��??JSONL ?�일??추�?"""
+    """단일 항목을 JSONL 파일에 추가"""
     with open(out_path, mode='a', encoding='utf8') as wf:
         wf.write(json.dumps(row, ensure_ascii=False))
         wf.write('\n')
 
 
 # ============================================================================
-# 문제 ?�처�??�수
+# 문제 전처리 함수
 # ============================================================================
 
 def is_multiple_choice(problem_text: str) -> bool:
-    """객�???문제?��? ?�별?�니??"""
-    # ?�택지 ?�턴 ?�인: \item[1], \item[2], ... ?�이 5�??�상 ?�는지
+    """객관식 문제인지 판별합니다."""
+    # 선택지 패턴 확인: \item[1], \item[2], ... 등이 5개 이상 있는지
     choice_pattern = r"\\item\[[1-5]\]"
     matches = re.findall(choice_pattern, problem_text)
     return len(matches) >= 5
@@ -111,22 +113,23 @@ def is_multiple_choice(problem_text: str) -> bool:
 
 def extract_choice_value(problem_text: str, choice_num: int) -> str:
     """
-    객�???문제?�서 ?�정 번호 ?�택지??값을 추출?�니??
+    객관식 문제에서 특정 번호 선택지의 값을 추출합니다.
     
-    ?? \\item[2] \\frac{1}{2} ??choice_num=2 ??"\\frac{1}{2}"
+    예: \\item[2] \\frac{1}{2} → choice_num=2 → "\\frac{1}{2}"
     
     Args:
-        problem_text: 문제 ?�스??        choice_num: ?�택지 번호 (1-5)
+        problem_text: 문제 텍스트
+        choice_num: 선택지 번호 (1-5)
     
     Returns:
-        ?�택지 �?(추출 ?�패 ???�본 choice_num??문자?�로 반환)
+        선택지 값 (추출 실패 시 원본 choice_num을 문자열로 반환)
     """
-    # \item[N] ?�음??값을 추출 (?�음 \item?�나 \end{itemize} ?�까지)
+    # \item[N] 다음의 값을 추출 (다음 \item이나 \end{itemize} 전까지)
     pattern = rf"\\item\[{choice_num}\]\s*(.+?)(?=\\item\[|\\end\{{itemize\}}|$)"
     match = re.search(pattern, problem_text, re.DOTALL)
     if match:
         value = match.group(1).strip()
-        # 줄바�??�거
+        # 줄바꿈 제거
         value = re.sub(r'\s+', ' ', value)
         return value
     return str(choice_num)
@@ -134,24 +137,25 @@ def extract_choice_value(problem_text: str, choice_num: int) -> str:
 
 def remove_choices(problem_text: str) -> str:
     """
-    객�???문제?�서 ?�택지�??�거?�여 주�??�으�?변?�합?�다.
+    객관식 문제에서 선택지를 제거하여 주관식으로 변환합니다.
     
-    ?�거 ?�턴:
-    - \\begin{itemize} ... \\end{itemize} 블록 ?�체
+    제거 패턴:
+    - \\begin{itemize} ... \\end{itemize} 블록 전체
     """
     text = problem_text
     
-    # LaTeX itemize ?�경 ?�거 (?�러 ?�턴 ?�도)
-    # ?�턴 1: \begin{itemize} ... \end{itemize}
+    # LaTeX itemize 환경 제거 (여러 패턴 시도)
+    # 패턴 1: \begin{itemize} ... \end{itemize}
     text = re.sub(r'\\begin\{itemize\}.*?\\end\{itemize\}', '', text, flags=re.DOTALL)
     
-    # ?�턴 2: \\begin{itemize} ... \\end{itemize} (?�스케?�프??버전)
+    # 패턴 2: \\begin{itemize} ... \\end{itemize} (이스케이프된 버전)
     text = re.sub(r'\\\\begin\{itemize\}.*?\\\\end\{itemize\}', '', text, flags=re.DOTALL)
     
-    # ?�택지 번호 ?�턴 ?�거 (1) (2) (3) (4) (5) ?�는 ??????????    text = re.sub(r'\s*\([1-5]\)\s*[^\(\n]*', '', text)
-    text = re.sub(r'\s*[?�②?�④??\s*[^\n]*', '', text)
+    # 선택지 번호 패턴 제거 (1) (2) (3) (4) (5) 또는 ① ② ③ ④ ⑤
+    text = re.sub(r'\s*\([1-5]\)\s*[^\(\n]*', '', text)
+    text = re.sub(r'\s*[①②③④⑤]\s*[^\n]*', '', text)
     
-    # ?�속 공백/줄바�??�리
+    # 연속 공백/줄바꿈 정리
     text = re.sub(r'\n\s*\n', '\n', text)
     text = re.sub(r'  +', ' ', text)
     
@@ -160,54 +164,58 @@ def remove_choices(problem_text: str) -> str:
 
 def clean_problem_text(problem_text: str, remove_mc_choices: bool = False) -> str:
     """
-    문제 ?�스?�에??번호?� ?�수�??�거?�니??
+    문제 텍스트에서 번호와 점수를 제거합니다.
     
-    ?�거 ?�턴:
-    - 문제 번호: "1. ", "12. " ??(문자???�작 부�?
-    - ?�수 ?�시: "[2??", "[3??", "[4??" ??    
+    제거 패턴:
+    - 문제 번호: "1. ", "12. " 등 (문자열 시작 부분)
+    - 점수 표시: "[2점]", "[3점]", "[4점]" 등
+    
     Args:
-        remove_mc_choices: True�?객�????�택지???�거
+        remove_mc_choices: True면 객관식 선택지도 제거
     
-    LaTeX ?�식?� ?��??�니??
+    LaTeX 형식은 유지합니다.
     """
     text = problem_text.strip()
     
-    # 문제 번호 ?�거 (?�작 부분의 "?�자. " ?�턴)
+    # 문제 번호 제거 (시작 부분의 "숫자. " 패턴)
     text = re.sub(r'^(\d+)\.\s*', '', text)
     
-    # ?�수 ?�시 ?�거 ("[2??", "[3??" ??
-    text = re.sub(r'\s*\[\d+??]\s*', ' ', text)
+    # 점수 표시 제거 ("[2점]", "[3점]" 등)
+    text = re.sub(r'\s*\[\d+점\]\s*', ' ', text)
     
-    # 객�????�택지 ?�거 (?�션)
+    # 객관식 선택지 제거 (옵션)
     if remove_mc_choices:
         text = remove_choices(text)
     
-    # ?�속 공백 ?�리
+    # 연속 공백 정리
     text = re.sub(r'  +', ' ', text)
     
     return text.strip()
 
 
 # ============================================================================
-# ?�롬?�트 ?�성
+# 프롬프트 생성
 # ============================================================================
 
 def get_prompt(problem_text: str, request_sentences: list, generation_id: int = 0,
                as_subjective: bool = False) -> str:
     """
-    문제?� boxed ?�청 문장??조합?�여 ?�롬?�트�??�성?�니??
+    문제와 boxed 요청 문장을 조합하여 프롬프트를 생성합니다.
     
     Args:
-        problem_text: ?�본 문제 ?�스??        request_sentences: boxed ?�청 문장 리스??        generation_id: ?�성 ?�덱??(?�롬?�트 변?�에 ?�용)
-        as_subjective: True�?객�????�택지�??�거?�여 주�??�으�?변??    """
-    # 문제 ?�처�?(번호/?�수 ?�거, ?�택지 ?�거 ?�션)
+        problem_text: 원본 문제 텍스트
+        request_sentences: boxed 요청 문장 리스트
+        generation_id: 생성 인덱스 (프롬프트 변형에 사용)
+        as_subjective: True면 객관식 선택지를 제거하여 주관식으로 변환
+    """
+    # 문제 전처리 (번호/점수 제거, 선택지 제거 옵션)
     cleaned_problem = clean_problem_text(problem_text, remove_mc_choices=as_subjective)
     
-    # ?�시 + generation_id�?문장 ?�택
+    # 해시 + generation_id로 문장 선택
     hash_code = hash(cleaned_problem) + generation_id
     sent = request_sentences[hash_code % len(request_sentences)]['sent']
     
-    # 배치 방식 결정 (4가지 변??
+    # 배치 방식 결정 (4가지 변형)
     variant = hash_code % 4
     if variant == 0:
         prompt = "\n".join([cleaned_problem, sent])
@@ -222,11 +230,11 @@ def get_prompt(problem_text: str, request_sentences: list, generation_id: int = 
 
 
 # ============================================================================
-# vLLM API ?�출
+# vLLM API 호출
 # ============================================================================
 
 def send_msg(prompt: str, base_url: str, model: str = "gpt-oss-120b"):
-    """vLLM ?�버???�청??보내�??�답??받습?�다."""
+    """vLLM 서버에 요청을 보내고 응답을 받습니다."""
     client = OpenAI(base_url=base_url, api_key="dummy")
     messages = [{"role": "user", "content": prompt}]
     completion = client.chat.completions.create(
@@ -235,26 +243,28 @@ def send_msg(prompt: str, base_url: str, model: str = "gpt-oss-120b"):
         reasoning_effort='high',
         temperature=1.0,
         top_p=1.0,
-        timeout=60 * 60 * 24  # 24?�간 ?�?�아??    )
+        timeout=60 * 60 * 24  # 24시간 타임아웃
+    )
     return completion
 
 
 # ============================================================================
-# 출력 ?�식 변??# ============================================================================
+# 출력 형식 변환
+# ============================================================================
 
 def format_output(problem: str, solution: str, answer: int, source: str, 
                   generation_id: int, format_type: str = "simple",
                   prompt: str = None) -> dict:
     """
-    결과�?지?�된 ?�식?�로 변?�합?�다.
+    결과를 지정된 형식으로 변환합니다.
     
-    지???�식:
-    - simple: 간단??problem/solution ?�식
-    - sharegpt: ShareGPT ?�???�식
-    - alpaca: Alpaca instruction ?�식
+    지원 형식:
+    - simple: 간단한 problem/solution 형식
+    - sharegpt: ShareGPT 대화 형식
+    - alpaca: Alpaca instruction 형식
     
     Args:
-        prompt: get_prompt()�??�성???�제 ?�롬?�트 (sharegpt/alpaca?�서 ?�용)
+        prompt: get_prompt()로 생성된 실제 프롬프트 (sharegpt/alpaca에서 사용)
     """
     cleaned_problem = clean_problem_text(problem)
     
@@ -268,7 +278,7 @@ def format_output(problem: str, solution: str, answer: int, source: str,
         }
     
     elif format_type == "sharegpt":
-        # prompt가 ?�공?�면 그�?�??�용, ?�니�?cleaned_problem ?�용
+        # prompt가 제공되면 그대로 사용, 아니면 cleaned_problem 사용
         human_message = prompt if prompt else cleaned_problem
         return {
             "messages": [
@@ -279,7 +289,7 @@ def format_output(problem: str, solution: str, answer: int, source: str,
         }
     
     elif format_type == "alpaca":
-        # prompt가 ?�공?�면 그�?�??�용
+        # prompt가 제공되면 그대로 사용
         if prompt:
             return {
                 "instruction": prompt,
@@ -291,7 +301,7 @@ def format_output(problem: str, solution: str, answer: int, source: str,
             }
         else:
             return {
-                "instruction": "?�음 ?�학 문제�??��? 최종 ?�을 \\boxed{} ?�에 ?�어주세??",
+                "instruction": "다음 수학 문제를 풀고, 최종 답을 \\boxed{} 안에 넣어주세요.",
                 "input": cleaned_problem,
                 "output": solution,
                 "answer": answer,
@@ -304,23 +314,23 @@ def format_output(problem: str, solution: str, answer: int, source: str,
 
 
 # ============================================================================
-# ??�� 처리
+# 항목 처리
 # ============================================================================
 
 def process_item(idx: tuple, problems: list, request_sentences: list, 
                  output_dir: str, base_url: str, model: str, 
                  source: str, format_type: str, question_type: str = "multiples"):
     """
-    ?�일 문제-?�성 ?�을 처리?�니??
+    단일 문제-생성 쌍을 처리합니다.
     
     Args:
-        idx: (문제 ?�덱?? ?�성 ?�덱??
-        question_type: "multiples" (객�??? ?�는 "subjectives" (주�???
+        idx: (문제 인덱스, 생성 인덱스)
+        question_type: "multiples" (객관식) 또는 "subjectives" (주관식)
     """
     problem_idx, gen_idx = idx
     output_path = f"{output_dir}/{problem_idx}_{gen_idx}.jsonl"
     
-    # ?��? 처리??경우 ?�킵
+    # 이미 처리된 경우 스킵
     if os.path.exists(output_path):
         return None
     
@@ -332,7 +342,7 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
     BACKOFF_FACTOR = 2
     
     item = problems[problem_idx]
-    # 주�??�이�??�택지 ?�거
+    # 주관식이면 선택지 제거
     as_subjective = (question_type == "subjectives")
     prompt = get_prompt(item['problem'], request_sentences, gen_idx, as_subjective=as_subjective)
     
@@ -363,7 +373,7 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
         print(f"[{problem_idx}_{gen_idx}] FAILED after {MAX_RETRIES} retries")
         return None
     
-    # ?�답 추출 (reasoning_content가 ?�으�?<think> ?�그�?감싸???�함)
+    # 응답 추출 (reasoning_content가 있으면 <think> 태그로 감싸서 포함)
     resp_dict = resp.choices[0].to_dict()
     message = resp_dict.get("message", {})
     
@@ -374,25 +384,26 @@ def process_item(idx: tuple, problems: list, request_sentences: list,
     
     answer = item.get('answer', None)
     
-    # 주�???버전?�면???�본??객�??�인 경우, ?�제 ??값을 추출
-    # (?? answer=2, 2�??�택지가 "\frac{1}{2}"?�면 ??real_answer="\frac{1}{2}")
+    # 주관식 버전이면서 원본이 객관식인 경우, 실제 답 값을 추출
+    # (예: answer=2, 2번 선택지가 "\frac{1}{2}"이면 → real_answer="\frac{1}{2}")
     if as_subjective and is_multiple_choice(item['problem']) and answer is not None:
         real_answer = extract_choice_value(item['problem'], answer)
     else:
         real_answer = answer
     
-    # ?�식??맞게 변??(?�성???�롬?�트???�달)
+    # 형식에 맞게 변환 (생성된 프롬프트도 전달)
     formatted = format_output(
         problem=item['problem'],
         solution=solution,
-        answer=real_answer,  # 주�??��? ?�제 ??�? 객�??��? ?�택지 번호
+        answer=real_answer,  # 주관식은 실제 답 값, 객관식은 선택지 번호
         source=source,
         generation_id=gen_idx,
         format_type=format_type,
-        prompt=prompt  # boxed 문장???�함???�제 ?�롬?�트
+        prompt=prompt  # boxed 문장이 포함된 실제 프롬프트
     )
     
-    # ?�??    to_jsonl(output_path, [formatted])
+    # 저장
+    to_jsonl(output_path, [formatted])
     
     end_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     req_duration = time.time() - req_start
@@ -406,22 +417,22 @@ def run_generation(problems: list, request_sentences: list, output_dir: str,
                    n: int = 10, max_workers: int = 200, question_type: str = "multiples",
                    retry_problems: list = None):
     """
-    모든 문제???�??n번씩 ?�?��? ?�성?�니??
+    모든 문제에 대해 n번씩 풀이를 생성합니다.
     
     Args:
-        question_type: "multiples" (객�??? ?�는 "subjectives" (주�???
-        retry_problems: ?�생?�할 문제 ?�덱??목록 (None?�면 모든 문제 처리)
+        question_type: "multiples" (객관식) 또는 "subjectives" (주관식)
+        retry_problems: 재생성할 문제 인덱스 목록 (None이면 모든 문제 처리)
     """
     inputs = []
     
     if retry_problems is not None:
-        # ?�생??모드: 지?�된 문제�?처리
+        # 재생성 모드: 지정된 문제만 처리
         for problem_idx in retry_problems:
             for j in range(n):
                 inputs.append((problem_idx, j))
         print(f"Retry mode: {len(inputs)} tasks ({len(retry_problems)} problems x {n} generations) [{question_type}]")
     else:
-        # ?�반 모드: 모든 문제 처리
+        # 일반 모드: 모든 문제 처리
         for i in range(len(problems)):
             for j in range(n):
                 inputs.append((i, j))
@@ -445,7 +456,7 @@ def run_generation(problems: list, request_sentences: list, output_dir: str,
 
 def merge_results(input_dirs: list, output_path: str):
     """
-    ?�러 ?�렉?�리??결과�??�나??JSONL ?�일�?병합?�니??
+    여러 디렉토리의 결과를 하나의 JSONL 파일로 병합합니다.
     """
     all_data = []
     
@@ -464,7 +475,7 @@ def merge_results(input_dirs: list, output_path: str):
     
     print(f"Total merged: {len(all_data)} items")
     
-    # 출력 ?�렉?�리 ?�성
+    # 출력 디렉토리 생성
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     to_jsonl(output_path, all_data)
     print(f"Saved to: {output_path}")
@@ -473,7 +484,7 @@ def merge_results(input_dirs: list, output_path: str):
 
 
 def find_math_files(data_dir: str) -> list:
-    """data ?�렉?�리?�서 ?�학 JSONL ?�일?�을 찾습?�다."""
+    """data 디렉토리에서 수학 JSONL 파일들을 찾습니다."""
     pattern = os.path.join(data_dir, "*_math.jsonl")
     files = glob.glob(pattern)
     return sorted(files)
@@ -487,10 +498,10 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="SFT ?�습 ?�이???�성�?,
+        description="SFT 학습 데이터 생성기",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-?�시:
+예시:
   python generate_sft_data.py
   python generate_sft_data.py --n 20 --worker 40
   python generate_sft_data.py --input_file ./data/2025_math.jsonl
@@ -498,44 +509,44 @@ def main():
         """
     )
     
-    # 경로 ?�정
+    # 경로 설정
     parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR, type=str,
-                        help=f"?�력 ?�이???�렉?�리 (기본: {DEFAULT_DATA_DIR})")
+                        help=f"입력 데이터 디렉토리 (기본: {DEFAULT_DATA_DIR})")
     parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR, type=str,
-                        help=f"출력 ?�렉?�리 (기본: {DEFAULT_OUTPUT_DIR})")
+                        help=f"출력 디렉토리 (기본: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--input_file", type=str, default=None,
-                        help="?�정 ?�일�?처리 (미�??�시 data_dir ??모든 *_math.jsonl 처리)")
+                        help="특정 파일만 처리 (미지정시 data_dir 내 모든 *_math.jsonl 처리)")
     
-    # ?�성 ?�정
+    # 생성 설정
     parser.add_argument("--n", default=DEFAULT_N, type=int,
-                        help=f"문제???�성 ?�수 (기본: {DEFAULT_N})")
+                        help=f"문제당 생성 횟수 (기본: {DEFAULT_N})")
     parser.add_argument("--worker", default=DEFAULT_WORKER, type=int,
-                        help=f"?�시 ?�커 ??(기본: {DEFAULT_WORKER})")
+                        help=f"동시 워커 수 (기본: {DEFAULT_WORKER})")
     parser.add_argument("--format", default=DEFAULT_FORMAT, type=str,
                         choices=["simple", "sharegpt", "alpaca"],
-                        help=f"출력 ?�식 (기본: {DEFAULT_FORMAT})")
+                        help=f"출력 형식 (기본: {DEFAULT_FORMAT})")
     
-    # vLLM ?�버 ?�정
+    # vLLM 서버 설정
     parser.add_argument("--base_url", default=DEFAULT_BASE_URL, type=str,
-                        help=f"vLLM ?�버 URL (기본: {DEFAULT_BASE_URL})")
+                        help=f"vLLM 서버 URL (기본: {DEFAULT_BASE_URL})")
     parser.add_argument("--model", default=DEFAULT_MODEL, type=str,
-                        help=f"모델 ?�름 (기본: {DEFAULT_MODEL})")
+                        help=f"모델 이름 (기본: {DEFAULT_MODEL})")
     
-    # ?�행 모드
+    # 실행 모드
     parser.add_argument("--merge_only", action="store_true",
-                        help="?�성 ?�이 기존 결과�?병합")
+                        help="생성 없이 기존 결과만 병합")
     parser.add_argument("--retry_file", type=str, default=None,
-                        help="?�생?�할 문제 목록 ?�일 경로 (.retry_queue.jsonl)")
+                        help="재생성할 문제 목록 파일 경로 (.retry_queue.jsonl)")
     
     args = parser.parse_args()
     
-    # boxed ?�청 문장 로드
-    sentences_path = os.path.join(args.data_dir, "sentences_ask_boxed_kr.jsonl")
+    # boxed 요청 문장 로드
+    sentences_path = os.path.join(args.data_dir, "sentences_ask_boxed.jsonl")
     if not os.path.exists(sentences_path):
-        raise FileNotFoundError(f"sentences_ask_boxed_kr.jsonl not found: {sentences_path}")
+        raise FileNotFoundError(f"sentences_ask_boxed.jsonl not found: {sentences_path}")
     request_sentences = open_jsonl(sentences_path)
     
-    # 처리???�학 ?�일 목록
+    # 처리할 수학 파일 목록
     if args.input_file:
         math_files = [args.input_file]
     else:
@@ -546,7 +557,7 @@ def main():
     
     print(f"Found {len(math_files)} math files: {[os.path.basename(f) for f in math_files]}")
     
-    # ?�생???�일 로드
+    # 재생성 파일 로드
     retry_queue = {}  # {(source, question_type): [problem_indices]}
     if args.retry_file and os.path.exists(args.retry_file):
         retry_items = open_jsonl(args.retry_file)
@@ -555,14 +566,14 @@ def main():
             if key not in retry_queue:
                 retry_queue[key] = []
             retry_queue[key].append(item["problem_idx"])
-        print(f"\n?�생??모드: {len(retry_items)}�?문제 ?�생???�정")
+        print(f"\n재생성 모드: {len(retry_items)}개 문제 재생성 예정")
         for (src, qtype), indices in retry_queue.items():
             print(f"  - {src}/{qtype}: 문제 {indices}")
     
     result_dirs = []
     
     if not args.merge_only:
-        # �??�일 처리
+        # 각 파일 처리
         for file_path in math_files:
             file_name = os.path.basename(file_path)
             source = file_name.replace('.jsonl', '')
@@ -574,55 +585,56 @@ def main():
             problems = open_jsonl(file_path)
             print(f"Loaded {len(problems)} problems from {file_name}")
             
-            # ?�계 출력
+            # 통계 출력
             mc_count = sum(1 for p in problems if is_multiple_choice(p['problem']))
-            print(f"  - 객�???문제: {mc_count}�? 주�???문제: {len(problems) - mc_count}�?)
+            print(f"  - 객관식 문제: {mc_count}개, 주관식 문제: {len(problems) - mc_count}개")
             
-            # 출력 ?�렉?�리 준�?            subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
+            # 출력 디렉토리 준비
+            subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
             mc_output_dir = os.path.join(args.output_dir, source, "multiples")
             os.makedirs(subj_output_dir, exist_ok=True)
             os.makedirs(mc_output_dir, exist_ok=True)
             result_dirs.append(subj_output_dir)
             result_dirs.append(mc_output_dir)
             
-            # ?�생?�할 문제 목록 ?�인
+            # 재생성할 문제 목록 확인
             subj_retry = retry_queue.get((source, "subjectives"), None)
             mc_retry = retry_queue.get((source, "multiples"), None)
             
-            # ?�생??모드??경우 기존 ?�일 ??��
+            # 재생성 모드일 경우 기존 파일 삭제
             if subj_retry:
-                print(f"\n[주�????�생?? 문제 {subj_retry} 기존 ?�일 ??�� �?..")
+                print(f"\n[주관식 재생성] 문제 {subj_retry} 기존 파일 삭제 중...")
                 for problem_idx in subj_retry:
                     for gen_idx in range(args.n):
                         old_file = os.path.join(subj_output_dir, f"{problem_idx}_{gen_idx}.jsonl")
                         if os.path.exists(old_file):
                             os.remove(old_file)
-                            print(f"  ??��: {old_file}")
+                            print(f"  삭제: {old_file}")
             
             if mc_retry:
-                print(f"\n[객�????�생?? 문제 {mc_retry} 기존 ?�일 ??�� �?..")
+                print(f"\n[객관식 재생성] 문제 {mc_retry} 기존 파일 삭제 중...")
                 for problem_idx in mc_retry:
                     for gen_idx in range(args.n):
                         old_file = os.path.join(mc_output_dir, f"{problem_idx}_{gen_idx}.jsonl")
                         if os.path.exists(old_file):
                             os.remove(old_file)
-                            print(f"  ??��: {old_file}")
+                            print(f"  삭제: {old_file}")
             
-            # ?�성???�??결정
+            # 생성할 타입 결정
             run_subj = subj_retry or not retry_queue
             run_mc = mc_retry or not retry_queue
             
-            # ?�커 분배: ?????�행?�면 반반, ?�나만이�??�체 ?�용
+            # 워커 분배: 둘 다 실행하면 반반, 하나만이면 전체 사용
             if run_subj and run_mc:
-                # ?? 주�???객�????�시 ?�성 (?�커 반반 분배)
+                # 🔀 주관식/객관식 동시 생성 (워커 반반 분배)
                 subj_workers = args.worker // 2
-                mc_workers = args.worker - subj_workers  # ?�?�일 경우 객�??�에 +1
+                mc_workers = args.worker - subj_workers  # 홀수일 경우 객관식에 +1
                 
-                print(f"\n[?�시 ?�성 모드] 주�????�커: {subj_workers}, 객�????�커: {mc_workers}")
-                print(f"  - 주�??? {len(subj_retry) if subj_retry else len(problems)}�?문제")
-                print(f"  - 객�??? {len(mc_retry) if mc_retry else len(problems)}�?문제")
+                print(f"\n[동시 생성 모드] 주관식 워커: {subj_workers}, 객관식 워커: {mc_workers}")
+                print(f"  - 주관식: {len(subj_retry) if subj_retry else len(problems)}개 문제")
+                print(f"  - 객관식: {len(mc_retry) if mc_retry else len(problems)}개 문제")
                 
-                # ???�성 ?�업???�시???�행
+                # 두 생성 작업을 동시에 실행
                 with ThreadPoolExecutor(max_workers=2) as type_executor:
                     subj_future = type_executor.submit(
                         run_generation,
@@ -653,12 +665,13 @@ def main():
                         retry_problems=mc_retry
                     )
                     
-                    # ?�료 ?��?                    subj_future.result()
+                    # 완료 대기
+                    subj_future.result()
                     mc_future.result()
                     
             elif run_subj:
-                # 주�??�만 ?�성 (?�체 ?�커 ?�용)
-                print(f"\n[주�???버전 ?�성 ?�작] ({len(subj_retry) if subj_retry else len(problems)}�?문제)")
+                # 주관식만 생성 (전체 워커 사용)
+                print(f"\n[주관식 버전 생성 시작] ({len(subj_retry) if subj_retry else len(problems)}개 문제)")
                 run_generation(
                     problems=problems,
                     request_sentences=request_sentences,
@@ -674,8 +687,8 @@ def main():
                 )
                 
             elif run_mc:
-                # 객�??�만 ?�성 (?�체 ?�커 ?�용)
-                print(f"\n[객�???버전 ?�성 ?�작] ({len(mc_retry) if mc_retry else len(problems)}�?문제)")
+                # 객관식만 생성 (전체 워커 사용)
+                print(f"\n[객관식 버전 생성 시작] ({len(mc_retry) if mc_retry else len(problems)}개 문제)")
                 run_generation(
                     problems=problems,
                     request_sentences=request_sentences,
@@ -690,10 +703,10 @@ def main():
                     retry_problems=mc_retry
                 )
     else:
-        # merge_only 모드: 기존 ?�렉?�리 찾기
+        # merge_only 모드: 기존 디렉토리 찾기
         for file_path in math_files:
             source = os.path.basename(file_path).replace('.jsonl', '')
-            # multiples?� subjectives ?�더 모두 찾기
+            # multiples와 subjectives 폴더 모두 찾기
             for qtype in ["multiples", "subjectives"]:
                 each_output_dir = os.path.join(args.output_dir, source, qtype)
                 if os.path.exists(each_output_dir):
