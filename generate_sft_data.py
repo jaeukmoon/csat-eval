@@ -537,14 +537,17 @@ def main():
                         help="생성 없이 기존 결과만 병합")
     parser.add_argument("--retry_file", type=str, default=None,
                         help="재생성할 문제 목록 파일 경로 (.retry_queue.jsonl)")
+    parser.add_argument("--instruction_file", type=str, default="sentences_ask_boxed_kr.jsonl",
+                        help="프롬프트 instruction 파일 (기본: sentences_ask_boxed_kr.jsonl)")
     
     args = parser.parse_args()
     
     # boxed 요청 문장 로드
-    sentences_path = os.path.join(args.data_dir, "sentences_ask_boxed.jsonl")
+    sentences_path = os.path.join(args.data_dir, args.instruction_file)
     if not os.path.exists(sentences_path):
-        raise FileNotFoundError(f"sentences_ask_boxed.jsonl not found: {sentences_path}")
+        raise FileNotFoundError(f"{args.instruction_file} not found: {sentences_path}")
     request_sentences = open_jsonl(sentences_path)
+    print(f"Loaded instruction file: {args.instruction_file}")
     
     # 처리할 수학 파일 목록
     if args.input_file:
