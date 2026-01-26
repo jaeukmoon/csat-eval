@@ -8,6 +8,7 @@ from typing import Optional
 from .huggingface import download_from_huggingface, is_available_on_huggingface
 from .math_pdf import build_math_jsonl
 from .english_pdf import build_english_jsonl
+from .korean_pdf import build_korean_jsonl
 
 
 def find_pdf_files(pdf_dir: Path, year: str, subject: str) -> tuple[Optional[Path], Optional[Path]]:
@@ -27,6 +28,7 @@ def build_if_missing(
     pdf_dir: Path,
     force: bool = False,
     vision_model: str = "gpt-5.2",
+    azure_vision_model: str = "gpt-4o",
 ) -> bool:
     """
     split에 해당하는 JSONL이 없으면 생성
@@ -80,6 +82,14 @@ def build_if_missing(
                     vision_model=vision_model,
                     force=force,
                 )
+            elif subject == "korean":
+                build_korean_jsonl(
+                    problem_pdf=problem_pdf,
+                    answer_pdf=answer_pdf,
+                    out_path=out_path,
+                    vision_model=vision_model,
+                    force=force,
+                )
             else:
                 print(f"[build] Unknown subject: {subject}")
                 return False
@@ -101,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--split",
         required=True,
-        help="데이터셋 split 이름 (예: 2026_math, 2025_english)"
+        help="데이터셋 split 이름 (예: 2026_math, 2026_english, 2026_korean)"
     )
     ap.add_argument(
         "--data_dir",
@@ -116,7 +126,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--vision_model",
         default="gpt-5.2",
-        help="PDF 변환에 사용할 Vision 모델 (기본값: gpt-5.2)"
+        help="PDF 변환에 사용할 OpenAI Vision 모델 - 수학/영어용 (기본값: gpt-5.2)"
+    )
+    ap.add_argument(
+        "--azure_vision_model",
+        default="gpt-5.1",
+        help="PDF 변환에 사용할 Azure OpenAI Vision 모델 - 국어용 (기본값: gpt-5.1)"
     )
     ap.add_argument(
         "--force",
@@ -140,6 +155,7 @@ def main():
         pdf_dir=pdf_dir,
         force=args.force,
         vision_model=args.vision_model,
+        azure_vision_model=args.azure_vision_model,
     )
     
     if success:

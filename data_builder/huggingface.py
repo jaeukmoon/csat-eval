@@ -17,6 +17,8 @@ HF_DATASETS = {
     "2025_math": ("cfpark00/KoreanSAT", None, None),
     # 영어 데이터셋 (mahalisyarifuddin/korean-csat-2025-english)
     "2025_english": ("mahalisyarifuddin/korean-csat-2025-english", None, "english"),
+    # 국어 데이터셋 (KKACHI-HUB/CSAT-KOREAN-2025)
+    "2025_korean": ("KKACHI-HUB/CSAT-KOREAN-2025", None, "korean"),
 }
 
 
@@ -70,6 +72,80 @@ def _convert_english_to_standard(examples: dict) -> dict:
     return converted
 
 
+def _convert_korean_to_standard(examples: dict) -> dict:
+    """국어 데이터를 표준 형식으로 변환
+    
+    국어 데이터셋 구조:
+    - idx: 문제 번호
+    - paragraph: 지문 (있을 수도 있음)
+    - question: 문제
+    - question_plus: 추가 문제 (있을 수도 있음)
+    - A, B, C, D, E: 선택지
+    - answer: 정답 번호 (1-5)
+    - point: 점수
+    """
+    converted = {
+        "id": [],
+        "name": [],
+        "problem": [],
+        "answer": [],
+        "score": [],
+        "review": [],
+    }
+    
+    num_items = len(examples.get("idx", examples.get("id", [])))
+    
+    for i in range(num_items):
+        idx = examples.get("idx", [None] * num_items)[i]
+        paragraph = examples.get("paragraph", [None] * num_items)[i]
+        question = examples.get("question", [""] * num_items)[i]
+        question_plus = examples.get("question_plus", [None] * num_items)[i]
+        option_a = examples.get("A", [None] * num_items)[i]
+        option_b = examples.get("B", [None] * num_items)[i]
+        option_c = examples.get("C", [None] * num_items)[i]
+        option_d = examples.get("D", [None] * num_items)[i]
+        option_e = examples.get("E", [None] * num_items)[i]
+        answer = examples.get("answer", [None] * num_items)[i]
+        point = examples.get("point", [2] * num_items)[i]
+        
+        # problem 필드 구성
+        problem_parts = []
+        
+        # 지문이 있으면 추가
+        if paragraph:
+            problem_parts.append(paragraph)
+            if not paragraph.endswith("\n"):
+                problem_parts.append("\n\n")
+            else:
+                problem_parts.append("\n")
+        
+        # 문제 번호와 문제
+        problem_parts.append(f"{idx}. {question}")
+        
+        # question_plus가 있으면 추가
+        if question_plus:
+            problem_parts.append(f"\n{question_plus}")
+        
+        # 선택지 추가
+        if option_a and option_b and option_c and option_d and option_e:
+            problem_parts.append("\n\n\\begin{itemize}")
+            problem_parts.append(f" \\item[1] {option_a}")
+            problem_parts.append(f" \\item[2] {option_b}")
+            problem_parts.append(f" \\item[3] {option_c}")
+            problem_parts.append(f" \\item[4] {option_d}")
+            problem_parts.append(f" \\item[5] {option_e}")
+            problem_parts.append(" \\end{itemize}")
+        
+        converted["id"].append(int(idx) if idx is not None else i + 1)
+        converted["name"].append(str(idx) if idx is not None else str(i + 1))
+        converted["problem"].append("".join(problem_parts))
+        converted["answer"].append(int(answer) if answer is not None else 1)
+        converted["score"].append(int(point) if point is not None else 2)
+        converted["review"].append(None)
+    
+    return converted
+
+
 def download_from_huggingface(
     split: str,
     out_path: Path,
@@ -111,9 +187,12 @@ def download_from_huggingface(
         first_split = list(ds_dict.keys())[0]
         ds = ds_dict[first_split]
     
-    # 영어 데이터셋 변환
+    # 데이터셋 변환
     if transform == "english":
         converted_data = _convert_english_to_standard(ds.to_dict())
+        ds = Dataset.from_dict(converted_data)
+    elif transform == "korean":
+        converted_data = _convert_korean_to_standard(ds.to_dict())
         ds = Dataset.from_dict(converted_data)
     
     # JSONL로 저장
