@@ -511,22 +511,29 @@ def get_instruction_file_for_data_file(data_file: str) -> str:
         return "sentences_ask_boxed_kr.jsonl"
 
 
-def should_generate_subjective(data_file: str) -> bool:
+def get_question_types_for_data_file(data_file: str) -> list:
     """
-    데이터 파일명에 따라 주관식 생성 여부를 결정합니다.
+    데이터 파일명에 따라 생성할 문제 유형을 반환합니다.
+    
+    - math: 객관식 + 주관식 모두 생성 (multiples, subjectives)
+    - korean, english: 객관식만 생성 (multiples)
     
     Args:
         data_file: 데이터 파일 경로 또는 파일명
         
     Returns:
-        True면 주관식도 생성, False면 객관식만 생성
+        생성할 문제 유형 리스트 (예: ["multiples"] 또는 ["multiples", "subjectives"])
     """
     filename = os.path.basename(data_file)
-    # math와 korean은 객관식만 생성
-    if "_math" in filename or "_korean" in filename:
-        return False
-    # 기타 (english 등)는 주관식도 생성 가능
-    return True
+    if "_korean" in filename or "_english" in filename:
+        # 국어, 영어: 객관식만 생성
+        return ["multiples"]
+    elif "_math" in filename:
+        # 수학: 둘 다 생성
+        return ["multiples", "subjectives"]
+    else:
+        # 기타: 둘 다 생성 (기본값)
+        return ["multiples", "subjectives"]
 
 
 # ============================================================================
@@ -649,29 +656,26 @@ def main():
             mc_count = sum(1 for p in problems if is_multiple_choice(p['problem']))
             print(f"  - 객관식 문제: {mc_count}개, 주관식 문제: {len(problems) - mc_count}개")
             
-            # 파일 타입에 따라 주관식 생성 여부 결정
-            generate_subjective = should_generate_subjective(file_path)
+            # 이 파일에 대해 생성할 문제 유형 확인
+            allowed_types = get_question_types_for_data_file(file_path)
             
-            # 출력 디렉토리 준비
+            # 출력 디렉토리 준비 (생성할 유형만)
+            subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
             mc_output_dir = os.path.join(args.output_dir, source, "multiples")
-            os.makedirs(mc_output_dir, exist_ok=True)
-            result_dirs.append(mc_output_dir)
             
-            # 주관식 디렉토리는 필요할 때만 생성
-            if generate_subjective:
-                subj_output_dir = os.path.join(args.output_dir, source, "subjectives")
+            if "subjectives" in allowed_types:
                 os.makedirs(subj_output_dir, exist_ok=True)
                 result_dirs.append(subj_output_dir)
-            else:
-                subj_output_dir = None
-                print(f"  - 주의: {source}는 객관식만 생성됩니다 (주관식 생성 비활성화)")
+            if "multiples" in allowed_types:
+                os.makedirs(mc_output_dir, exist_ok=True)
+                result_dirs.append(mc_output_dir)
             
             # 재생성할 문제 목록 확인
-            subj_retry = retry_queue.get((source, "subjectives"), None) if generate_subjective else None
+            subj_retry = retry_queue.get((source, "subjectives"), None)
             mc_retry = retry_queue.get((source, "multiples"), None)
             
             # 재생성 모드일 경우 기존 파일 삭제
-            if subj_retry and subj_output_dir:
+            if subj_retry:
                 print(f"\n[주관식 재생성] 문제 {subj_retry} 기존 파일 삭제 중...")
                 for problem_idx in subj_retry:
                     for gen_idx in range(args.n):
@@ -689,9 +693,17 @@ def main():
                             os.remove(old_file)
                             print(f"  삭제: {old_file}")
             
-            # 생성할 타입 결정
-            run_subj = (subj_retry or not retry_queue) and generate_subjective
-            run_mc = mc_retry or not retry_queue
+            # 생성할 타입 결정 (파일 유형에 따라 다름)
+            # 재생성 모드가 아니면 allowed_types에 따라 결정
+            # 재생성 모드면 해당 타입이 allowed_types에 있고 retry_queue에 있을 때만 실행
+            if retry_queue:
+                run_subj = "subjectives" in allowed_types and subj_retry is not None
+                run_mc = "multiples" in allowed_types and mc_retry is not None
+            else:
+                run_subj = "subjectives" in allowed_types
+                run_mc = "multiples" in allowed_types
+            
+            print(f"  - 생성할 유형: {', '.join(allowed_types)}")
             
             # 워커 분배: 둘 다 실행하면 반반, 하나만이면 전체 사용
             if run_subj and run_mc:
@@ -705,23 +717,20 @@ def main():
                 
                 # 두 생성 작업을 동시에 실행
                 with ThreadPoolExecutor(max_workers=2) as type_executor:
-                    if subj_output_dir:
-                        subj_future = type_executor.submit(
-                            run_generation,
-                            problems=problems,
-                            request_sentences=request_sentences,
-                            output_dir=subj_output_dir,
-                            base_url=args.base_url,
-                            model=args.model,
-                            source=source,
-                            format_type=args.format,
-                            n=args.n,
-                            max_workers=subj_workers,
-                            question_type="subjectives",
-                            retry_problems=subj_retry
-                        )
-                    else:
-                        subj_future = None
+                    subj_future = type_executor.submit(
+                        run_generation,
+                        problems=problems,
+                        request_sentences=request_sentences,
+                        output_dir=subj_output_dir,
+                        base_url=args.base_url,
+                        model=args.model,
+                        source=source,
+                        format_type=args.format,
+                        n=args.n,
+                        max_workers=subj_workers,
+                        question_type="subjectives",
+                        retry_problems=subj_retry
+                    )
                     mc_future = type_executor.submit(
                         run_generation,
                         problems=problems,
@@ -738,8 +747,7 @@ def main():
                     )
                     
                     # 완료 대기
-                    if subj_future:
-                        subj_future.result()
+                    subj_future.result()
                     mc_future.result()
                     
             elif run_subj:
@@ -776,15 +784,11 @@ def main():
                     retry_problems=mc_retry
                 )
     else:
-        # merge_only 모드: 기존 디렉토리 찾기
+        # merge_only 모드: 기존 디렉토리 찾기 (파일 유형에 맞는 것만)
         for file_path in data_files:
             source = os.path.basename(file_path).replace('.jsonl', '')
-            # multiples는 항상, subjectives는 파일 타입에 따라
-            qtypes = ["multiples"]
-            if should_generate_subjective(file_path):
-                qtypes.append("subjectives")
-            
-            for qtype in qtypes:
+            allowed_types = get_question_types_for_data_file(file_path)
+            for qtype in allowed_types:
                 each_output_dir = os.path.join(args.output_dir, source, qtype)
                 if os.path.exists(each_output_dir):
                     result_dirs.append(each_output_dir)
