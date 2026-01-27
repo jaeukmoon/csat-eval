@@ -27,7 +27,7 @@ from openai import OpenAI
 # ----------------------------------------------------------------------------
 
 # 입력 데이터 디렉토리 (기본값)
-# - *_math.jsonl 파일과 sentences_ask_boxed.jsonl이 있는 폴더
+# - *_math.jsonl, *_korean.jsonl 파일과 sentences_ask_boxed*.jsonl이 있는 폴더
 DEFAULT_DATA_DIR = "./data"
 
 # 출력 디렉토리 (기본값)  
@@ -483,11 +483,32 @@ def merge_results(input_dirs: list, output_path: str):
     return all_data
 
 
-def find_math_files(data_dir: str) -> list:
-    """data 디렉토리에서 수학 JSONL 파일들을 찾습니다."""
-    pattern = os.path.join(data_dir, "*_math.jsonl")
-    files = glob.glob(pattern)
-    return sorted(files)
+def find_data_files(data_dir: str) -> list:
+    """data 디렉토리에서 JSONL 파일들을 찾습니다. (math, korean)"""
+    patterns = ["*_math.jsonl", "*_korean.jsonl"]
+    files = []
+    for pattern in patterns:
+        files.extend(glob.glob(os.path.join(data_dir, pattern)))
+    return sorted(set(files))
+
+
+def get_instruction_file_for_data_file(data_file: str) -> str:
+    """
+    데이터 파일명에 따라 적절한 instruction 파일을 반환합니다.
+    
+    Args:
+        data_file: 데이터 파일 경로 또는 파일명
+        
+    Returns:
+        instruction 파일명
+    """
+    filename = os.path.basename(data_file)
+    if "_korean" in filename:
+        return "sentences_ask_boxed_kr.jsonl"
+    elif "_english" in filename:
+        return "sentences_ask_boxed.jsonl"
+    else:  # math 또는 기타
+        return "sentences_ask_boxed_kr.jsonl"
 
 
 # ============================================================================
@@ -515,7 +536,7 @@ def main():
     parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR, type=str,
                         help=f"출력 디렉토리 (기본: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--input_file", type=str, default=None,
-                        help="특정 파일만 처리 (미지정시 data_dir 내 모든 *_math.jsonl 처리)")
+                        help="특정 파일만 처리 (미지정시 data_dir 내 모든 *_math.jsonl, *_korean.jsonl, *_english.jsonl 처리)")
     
     # 생성 설정
     parser.add_argument("--n", default=DEFAULT_N, type=int,
@@ -537,28 +558,41 @@ def main():
                         help="생성 없이 기존 결과만 병합")
     parser.add_argument("--retry_file", type=str, default=None,
                         help="재생성할 문제 목록 파일 경로 (.retry_queue.jsonl)")
-    parser.add_argument("--instruction_file", type=str, default="sentences_ask_boxed_kr.jsonl",
-                        help="프롬프트 instruction 파일 (기본: sentences_ask_boxed_kr.jsonl)")
+    parser.add_argument("--instruction_file", type=str, default=None,
+                        help="프롬프트 instruction 파일 (미지정시 파일명에 따라 자동 선택: korean→sentences_ask_boxed_kr.jsonl, english→sentences_ask_boxed.jsonl, 기타→sentences_ask_boxed_kr.jsonl)")
     
     args = parser.parse_args()
     
-    # boxed 요청 문장 로드
-    sentences_path = os.path.join(args.data_dir, args.instruction_file)
-    if not os.path.exists(sentences_path):
-        raise FileNotFoundError(f"{args.instruction_file} not found: {sentences_path}")
-    request_sentences = open_jsonl(sentences_path)
-    print(f"Loaded instruction file: {args.instruction_file}")
-    
-    # 처리할 수학 파일 목록
+    # 처리할 데이터 파일 목록
     if args.input_file:
-        math_files = [args.input_file]
+        data_files = [args.input_file]
     else:
-        math_files = find_math_files(args.data_dir)
+        data_files = find_data_files(args.data_dir)
     
-    if not math_files:
-        raise FileNotFoundError(f"No math JSONL files found in {args.data_dir}")
+    if not data_files:
+        raise FileNotFoundError(f"No data JSONL files found in {args.data_dir}")
     
-    print(f"Found {len(math_files)} math files: {[os.path.basename(f) for f in math_files]}")
+    print(f"Found {len(data_files)} data files: {[os.path.basename(f) for f in data_files]}")
+    
+    # 각 파일에 대한 instruction 파일 매핑
+    file_instruction_map = {}
+    for file_path in data_files:
+        if args.instruction_file:
+            # 명시적으로 지정된 경우 모든 파일에 동일하게 적용
+            file_instruction_map[file_path] = args.instruction_file
+        else:
+            # 파일명에 따라 자동 선택
+            file_instruction_map[file_path] = get_instruction_file_for_data_file(file_path)
+    
+    # instruction 파일 로드 (각 파일별로 다를 수 있음)
+    instruction_cache = {}  # {instruction_file: sentences_list}
+    for file_path, instruction_file in file_instruction_map.items():
+        if instruction_file not in instruction_cache:
+            sentences_path = os.path.join(args.data_dir, instruction_file)
+            if not os.path.exists(sentences_path):
+                raise FileNotFoundError(f"{instruction_file} not found: {sentences_path}")
+            instruction_cache[instruction_file] = open_jsonl(sentences_path)
+            print(f"Loaded instruction file: {instruction_file}")
     
     # 재생성 파일 로드
     retry_queue = {}  # {(source, question_type): [problem_indices]}
@@ -577,7 +611,7 @@ def main():
     
     if not args.merge_only:
         # 각 파일 처리
-        for file_path in math_files:
+        for file_path in data_files:
             file_name = os.path.basename(file_path)
             source = file_name.replace('.jsonl', '')
             
@@ -587,6 +621,11 @@ def main():
             
             problems = open_jsonl(file_path)
             print(f"Loaded {len(problems)} problems from {file_name}")
+            
+            # 이 파일에 맞는 instruction 파일 사용
+            instruction_file = file_instruction_map[file_path]
+            request_sentences = instruction_cache[instruction_file]
+            print(f"Using instruction file: {instruction_file}")
             
             # 통계 출력
             mc_count = sum(1 for p in problems if is_multiple_choice(p['problem']))
@@ -707,7 +746,7 @@ def main():
                 )
     else:
         # merge_only 모드: 기존 디렉토리 찾기
-        for file_path in math_files:
+        for file_path in data_files:
             source = os.path.basename(file_path).replace('.jsonl', '')
             # multiples와 subjectives 폴더 모두 찾기
             for qtype in ["multiples", "subjectives"]:
